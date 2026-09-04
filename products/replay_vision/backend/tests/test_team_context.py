@@ -2,6 +2,8 @@ import datetime as dt
 
 from posthog.test.base import BaseTest
 
+from ee.models.event_definition import EnterpriseEventDefinition
+
 from posthog.models import Team
 
 from products.posthog_ai.backend.models.assistant import CoreMemory
@@ -13,8 +15,6 @@ from products.replay_vision.backend.temporal.team_context import (
     fetch_product_context,
 )
 from products.replay_vision.backend.temporal.types import ScannerLlmInputs
-
-from ee.models.event_definition import EnterpriseEventDefinition
 
 
 def _rows(*event_names: str) -> tuple[list[str], list[list[str]]]:

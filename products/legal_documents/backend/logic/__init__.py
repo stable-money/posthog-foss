@@ -18,14 +18,11 @@ from django.utils import timezone
 import structlog
 import posthoganalytics
 
-from posthog.cloud_utils import get_cached_instance_license
 from posthog.email import EmailMessage, get_email_team_and_org_context, is_email_available
 from posthog.event_usage import groups
 from posthog.exceptions_capture import capture_exception
 from posthog.models.organization import Organization, OrganizationMembership
 from posthog.storage import object_storage
-
-from ee.billing.billing_manager import BillingManager
 
 from ..facade.enums import DocumentType
 from ..models import LegalDocument
@@ -73,11 +70,13 @@ def template_id_matches_document(document: LegalDocument, template_id: str) -> b
 
 
 def has_qualifying_baa_addon(organization: Organization) -> bool:
-    billing = BillingManager(get_cached_instance_license()).get_billing(organization)
-    for product in billing.get("products") or []:
-        for addon in product.get("addons") or []:
-            if addon.get("type") in BAA_ADDON_TYPES and addon.get("subscribed"):
-                return True
+    """Whether the organization has a subscribed BAA addon.
+
+    Always False in this tree: addon subscriptions are read from the billing service,
+    which does not exist here, so no organization can hold one. This keeps the caller in
+    presentation/serializers.py denying BAA document requests, which is what it already
+    did -- the billing lookup could only ever have returned no addons.
+    """
     return False
 
 

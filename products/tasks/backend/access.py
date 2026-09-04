@@ -3,19 +3,11 @@ from typing import TYPE_CHECKING
 
 from django.conf import settings
 
-from posthog.cloud_utils import get_cached_instance_license
 from posthog.models.user import User
 from posthog.ph_client import feature_enabled_or_false, get_feature_flag_or_none
 
 from products.tasks.backend.facade.contracts import DesktopAccessReason
 from products.tasks.backend.metrics import observe_desktop_access_decision
-
-from ee.billing.billing_manager import (
-    BillingManager,
-    FundingStatusUnavailable,
-    OrganizationFundingStatus,
-    PrepaidCreditState,
-)
 
 if TYPE_CHECKING:
     from posthog.models.organization import Organization
@@ -46,13 +38,6 @@ class DesktopAccessDecision(StrEnum):
         return None
 
 
-def _get_funding_status(user: User, organization: "Organization") -> OrganizationFundingStatus:
-    try:
-        return BillingManager(get_cached_instance_license(), user).get_funding_status(organization)
-    except FundingStatusUnavailable as error:
-        raise DesktopAccessResolutionError("Could not resolve organization funding status") from error
-
-
 def get_desktop_access_decision(user: User, organization: "Organization") -> DesktopAccessDecision:
     if not user or not user.is_authenticated or not user.distinct_id:
         raise DesktopAccessResolutionError("Authentication is required to evaluate Desktop access")
@@ -79,19 +64,10 @@ def get_desktop_access_decision(user: User, organization: "Organization") -> Des
         observe_desktop_access_decision(outcome="override")
         return DesktopAccessDecision.ALLOWED
 
-    try:
-        funding_status = _get_funding_status(user, organization)
-    except DesktopAccessResolutionError:
-        observe_desktop_access_decision(outcome="resolution_failure")
-        raise
-
-    if funding_status.startup_program_label is not None:
-        observe_desktop_access_decision(outcome="startup_plan")
-        return DesktopAccessDecision.STARTUP_PLAN
-    if funding_status.prepaid_credit_state in {PrepaidCreditState.PENDING, PrepaidCreditState.ACTIVE}:
-        observe_desktop_access_decision(outcome="prepaid_credits")
-        return DesktopAccessDecision.PREPAID_CREDITS
-
+    # The STARTUP_PLAN and PREPAID_CREDITS denial reasons below are both billing states,
+    # read from the billing service. This tree has no billing service, so no organization
+    # can ever be in either state and the branch could never fire -- it is removed rather
+    # than left as a check that is structurally incapable of denying anything.
     observe_desktop_access_decision(outcome="allowed")
     return DesktopAccessDecision.ALLOWED
 

@@ -7,11 +7,8 @@ from django.db import close_old_connections
 from structlog.contextvars import bind_contextvars
 from temporalio import activity
 
-from posthog.models.team.team import Team
 from posthog.settings.base_variables import TEST
 from posthog.temporal.common.logger import get_logger
-
-from ee.billing.quota_limiting import QuotaLimitingCaches, QuotaResource, is_team_limited
 
 LOGGER = get_logger(__name__)
 
@@ -77,10 +74,7 @@ def check_billing_limits_activity(inputs: CheckBillingLimitsActivityInputs) -> b
         )
         return False
 
-    team: Team = Team.objects.only("api_token").get(id=inputs.team_id)
-
-    if is_team_limited(team.api_token, QuotaResource.ROWS_SYNCED, QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY):
-        logger.info("Billing limits hit. Canceling sync")
-        return True
-
+    # No rows-synced quota can apply here. is_team_limited() answered from a Redis set
+    # populated only by the billing cron in the removed enterprise code, so it was already
+    # False for every team; dropping it keeps this activity's answer identical.
     return False

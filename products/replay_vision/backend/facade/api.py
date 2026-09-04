@@ -7,8 +7,7 @@ from products.replay_vision.backend.models.replay_observation import Observation
 from products.replay_vision.backend.models.replay_scanner import ReplayScanner, ScannerType
 from products.replay_vision.backend.observation_formatting import format_line, read_output
 from products.replay_vision.backend.scanner_access import accessible_observations, readable_observation_scanner_ids
-
-from ee.hogai.utils.untrusted import as_untrusted_data
+from products.replay_vision.backend.untrusted import as_untrusted_data
 
 if TYPE_CHECKING:
     from posthog.models.team.team import Team

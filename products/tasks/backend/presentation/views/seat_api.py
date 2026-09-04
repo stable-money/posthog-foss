@@ -9,20 +9,17 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotAuthenticated, ParseError, PermissionDenied
+from rest_framework.exceptions import ParseError, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 
 from posthog.auth import OAuthAccessTokenAuthentication, PersonalAPIKeyAuthentication
-from posthog.cloud_utils import get_cached_instance_license
 from posthog.models.organization import Organization, OrganizationMembership
 from posthog.models.user import User
 
 # TODO: Centralize billing proxy through BillingManager (ee/billing/) to avoid
 # duplicating auth header construction and keep all billing communication in one place
-from ee.billing.billing_manager import build_billing_token
-from ee.settings import BILLING_SERVICE_URL
 
 PRO_PLAN_PREFIXES = ("posthog-code-200", "posthog-code-pro-")
 RETIRED_SEAT_PRODUCT_MESSAGE = (
@@ -98,18 +95,14 @@ class SeatViewSet(viewsets.ViewSet):
         return self._get_billing_headers_for_org(user, org)
 
     def _get_billing_headers_for_org(self, user: User, org: Organization) -> dict[str, str] | None:
-        license = get_cached_instance_license()
-        if not license:
-            return None
-        try:
-            token = build_billing_token(license, org, user)
-        except NotAuthenticated:
-            logger.warning("User not a member of organization", user_id=user.id, org_id=str(org.id))
-            return None
-        except Exception:
-            logger.exception("Failed to build billing token", user_id=user.id, org_id=str(org.id))
-            return None
-        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        """No billing credentials exist in this build.
+
+        Minting a billing-service token needs an instance licence and the token builder,
+        both of which live in the removed enterprise code. Returning None takes the
+        already-present "billing unavailable" path, so these endpoints answer 502 instead
+        of pretending to have talked to a billing service.
+        """
+        return None
 
     @staticmethod
     def _resolve_distinct_id(pk: str | None, request: Request) -> str:
@@ -152,19 +145,11 @@ class SeatViewSet(viewsets.ViewSet):
         json_body: Any = None,
         query_params: dict[str, str] | None = None,
     ) -> requests.Response | None:
-        url = f"{BILLING_SERVICE_URL}{path}"
-        try:
-            return requests.request(
-                method=method,
-                url=url,
-                headers=headers,
-                json=json_body,
-                params=query_params,
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-        except requests.RequestException:
-            logger.exception("Billing service request failed", path=path, method=method)
-            return None
+        # There is no billing service in this build, and no BILLING_SERVICE_URL to address
+        # it. None routes through _forward_response's existing 502 "Billing service
+        # unavailable" branch.
+        logger.info("Billing service is not configured in this build", path=path, method=method)
+        return None
 
     def _require_admin(self, request: Request) -> None:
         if not _is_org_admin(request.user):

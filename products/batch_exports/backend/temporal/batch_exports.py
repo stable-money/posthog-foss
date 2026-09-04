@@ -1,6 +1,5 @@
 import uuid
 import typing
-import asyncio
 import datetime as dt
 import dataclasses
 import collections.abc
@@ -16,7 +15,6 @@ from temporalio.common import RetryPolicy
 from posthog.cdp.internal_events import InternalEventEvent, create_internal_event, internal_event_to_dict
 from posthog.kafka_client.routing import async_producer_scope
 from posthog.kafka_client.topics import KAFKA_APP_METRICS2, KAFKA_CDP_INTERNAL_EVENTS
-from posthog.models.team.team import Team
 from posthog.models.utils import UUIDT
 from posthog.settings.base_variables import TEST
 from posthog.sync import database_sync_to_async
@@ -55,8 +53,6 @@ from products.notifications.backend.facade.api import (
     create_notification,
 )
 from products.notifications.backend.facade.enums import NotificationOnlyResourceType
-
-from ee.billing.quota_limiting import QuotaLimitingCaches, QuotaResource, list_limited_team_attributes
 
 LOGGER = get_write_only_logger(__name__)
 EXTERNAL_LOGGER = get_logger("EXTERNAL")
@@ -518,18 +514,9 @@ async def check_is_over_limit(team_id: int) -> bool:
 
     If so, the batch export should not run.
     """
-    team: Team = await Team.objects.aget(id=team_id)
-
-    # The ROWS_EXPORTED resource stores a team attribute for each team that has
-    # exceeded their quota and thus is limited. The term "attribute" refers to
-    # a team identifier, which in our case is the team's API token.
-    limited_team_tokens_rows_exported = await asyncio.to_thread(
-        list_limited_team_attributes, QuotaResource.ROWS_EXPORTED, QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY
-    )
-
-    if team.api_token in limited_team_tokens_rows_exported:
-        return True
-
+    # No team can be over a rows-exported quota in this build. The limited-team list was
+    # read from a Redis set that only the billing cron wrote to, and that cron is part of
+    # the enterprise code this build does not contain, so the set was always empty here.
     return False
 
 

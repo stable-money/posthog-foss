@@ -1,7 +1,8 @@
 """Transform a Harmonic company response into the enrichment field registry.
 
-Tag/YC/safe-cast heuristics are shared with the Salesforce enrichment transforms in
-ee/billing/salesforce_enrichment/enrichment.py and imported from there rather than copied.
+The tag, YC and safe-cast heuristics came from the Salesforce enrichment transforms in
+the enterprise tree, which this build does not contain. They are defined below instead,
+against the same Harmonic payload shapes the rest of this module reads.
 """
 
 from typing import Any, Optional
@@ -9,7 +10,52 @@ from typing import Any, Optional
 from products.growth.backend.enrichment.countries import country_name_to_iso_code
 from products.growth.backend.enrichment.fields import EnrichmentFields
 
-from ee.billing.salesforce_enrichment.enrichment import _extract_primary_tag, _is_yc_funded, _safe_dict, _safe_list
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    """Give callers a dict to read from, so a missing or malformed field is not an error."""
+    return value if isinstance(value, dict) else {}
+
+
+def _safe_list(value: Any) -> list[Any]:
+    """Give callers a list to iterate, so a missing or malformed field is not an error."""
+    return value if isinstance(value, list) else []
+
+
+def _extract_primary_tag(tags: list[Any], tags_v2: list[Any]) -> Optional[str]:
+    """Pick the company's headline industry tag.
+
+    tagsV2 entries are objects with a displayValue, the shape _is_ai_native also reads.
+    The older tags list holds plain strings. Harmonic returns the most relevant entry
+    first, so the first usable one wins.
+    """
+    for tag in tags_v2:
+        display = _safe_dict(tag).get("displayValue")
+        if isinstance(display, str) and display.strip():
+            return display.strip()
+    for tag in tags:
+        if isinstance(tag, str) and tag.strip():
+            return tag.strip()
+        display = _safe_dict(tag).get("displayValue")
+        if isinstance(display, str) and display.strip():
+            return display.strip()
+    return None
+
+
+def _is_yc_funded(investors: Any) -> Optional[bool]:
+    """Tell if Y Combinator is one of the investors.
+
+    Returns None when there is no investor data, so absence is not recorded as a no.
+    This is the same distinction _is_ai_native makes for tags. Company investors carry
+    name and angels carry fullName, as _investor_names shows.
+    """
+    if not isinstance(investors, list) or not investors:
+        return None
+    for investor in investors:
+        entry = _safe_dict(investor)
+        name = entry.get("name") or entry.get("fullName")
+        if isinstance(name, str) and "y combinator" in name.lower():
+            return True
+    return False
 
 
 def _latest_metric(traction: dict[str, Any], metric: str) -> Optional[int]:

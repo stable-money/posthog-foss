@@ -114,8 +114,6 @@ from products.notifications.backend.facade.api import (
 )
 from products.tasks.backend.facade import api as tasks_facade
 
-from ee.clickhouse.views.experiment_saved_metrics import ExperimentToSavedMetricSerializer
-
 logger = structlog.get_logger(__name__)
 
 # Feature flag (in PostHog's internal project) gating which teams auto-open flag-cleanup PRs when an
@@ -123,6 +121,22 @@ logger = structlog.get_logger(__name__)
 EXPERIMENT_CLEANUP_PR_FLAG = "experiment-flag-cleanup-pr"
 
 CleanupRepositorySource = Literal["explicit", "team_default", "single_repo", "ambiguous", "no_integration"]
+
+
+def _link_saved_metric_to_experiment(experiment, saved_metric_id, metadata) -> None:
+    """Attach one saved metric to an experiment.
+
+    The saved metric is fetched scoped to the experiment's team, so a request cannot
+    reference a saved metric that belongs to another team. A missing or out-of-team id
+    raises ExperimentSavedMetric.DoesNotExist, which the callers already surface as a
+    validation failure rather than a silent skip.
+    """
+    saved_metric = ExperimentSavedMetric.objects.get(id=saved_metric_id, team=experiment.team)
+    ExperimentToSavedMetric.objects.create(
+        experiment=experiment,
+        saved_metric=saved_metric,
+        metadata=metadata or {},
+    )
 
 
 class CleanupRepositoryTarget(TypedDict):
@@ -1799,19 +1813,8 @@ class ExperimentService:
         serializer_context: dict | None,
     ) -> None:
         """Create saved metric junction records and sync ordering."""
-        context = serializer_context or self._build_serializer_context()
-
         for saved_metric_data in saved_metrics_ids:
-            saved_metric_serializer = ExperimentToSavedMetricSerializer(
-                data={
-                    "experiment": experiment.id,
-                    "saved_metric": saved_metric_data["id"],
-                    "metadata": saved_metric_data.get("metadata"),
-                },
-                context=context,
-            )
-            saved_metric_serializer.is_valid(raise_exception=True)
-            saved_metric_serializer.save()
+            _link_saved_metric_to_experiment(experiment, saved_metric_data["id"], saved_metric_data.get("metadata"))
 
         primary_ordering = list(experiment.primary_metrics_ordered_uuids or [])
         secondary_ordering = list(experiment.secondary_metrics_ordered_uuids or [])
@@ -3793,16 +3796,7 @@ class ExperimentService:
                             existing_link.metadata = new_metadata
                             existing_link.save(update_fields=["metadata", "updated_at"])
                     else:
-                        saved_metric_serializer = ExperimentToSavedMetricSerializer(
-                            data={
-                                "experiment": experiment.id,
-                                "saved_metric": saved_metric_id,
-                                "metadata": new_metadata,
-                            },
-                            context=context,
-                        )
-                        saved_metric_serializer.is_valid(raise_exception=True)
-                        saved_metric_serializer.save()
+                        _link_saved_metric_to_experiment(experiment, saved_metric_id, new_metadata)
 
             # (stats_config / excluded_variants / duplicate-metric-uuid validation
             # runs before the flag write above so a 400 can't leave a committed flag

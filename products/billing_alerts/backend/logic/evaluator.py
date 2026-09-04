@@ -8,12 +8,9 @@ from typing import Any
 
 from django.utils import timezone
 
-from posthog.cloud_utils import get_cached_instance_license
 from posthog.models import Organization
 
 from products.billing_alerts.backend.models import BillingAlertConfiguration
-
-from ee.billing.billing_manager import BillingManager
 
 # Billing period totals the evaluator reads for each supported metric. Both are
 # after-discount amounts so alerts fire on what the customer actually owes.
@@ -85,10 +82,19 @@ def fetch_billing_data(
     alert: BillingAlertConfiguration,
     organization: Organization,
     *,
-    manager: BillingManager | None = None,
+    manager: Any | None = None,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any], int]:
-    manager = manager or BillingManager(get_cached_instance_license())
+    """Fetch billing status for an alert.
+
+    Unavailable in this tree: billing status comes from the billing service, which does
+    not exist here. Every production caller invokes this without injecting a manager, so
+    there is no path that can succeed. It raises rather than returning empty data, so an
+    alert can never silently evaluate as "not breached" against data it never fetched.
+    The scheduled check that would call this is unregistered in posthog/temporal/schedule.py.
+    """
+    if manager is None:
+        raise BillingAlertEvaluationError("Billing data is unavailable: this build has no billing service.")
     start = perf_counter()
     response = manager.get_billing_status_for_alerts(organization)
     return response, int((perf_counter() - start) * 1000)
@@ -104,7 +110,7 @@ def _customer(billing_response: dict[str, Any]) -> dict[str, Any]:
 def evaluate_billing_alert(
     alert: BillingAlertConfiguration,
     *,
-    manager: BillingManager | None = None,
+    manager: Any | None = None,
     now: datetime | None = None,
     billing_response: dict[str, Any] | None = None,
     query_duration_ms: int | None = None,

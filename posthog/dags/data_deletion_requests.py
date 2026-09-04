@@ -64,8 +64,6 @@ from posthog.models.person.bulk_delete import (
     resolve_persons_for_deletion,
 )
 
-from ee.clickhouse.materialized_columns.columns import MaterializedColumnDetails
-
 OWNER_TAG = {"owner": JobOwners.TEAM_CLICKHOUSE.value}
 
 
@@ -331,10 +329,25 @@ def _get_affected_mat_columns(
     target_props = set(properties)
     result: list[tuple[str, bool]] = []
     for col_name, comment, is_nullable in rows:
-        details = MaterializedColumnDetails.from_column_comment(comment)
-        if details.table_column == table_column and details.property_name in target_props:
+        comment_table_column, property_name = _parse_materializer_comment(comment)
+        if comment_table_column == table_column and property_name in target_props:
             result.append((col_name, bool(is_nullable)))
     return result
+
+
+def _parse_materializer_comment(comment: str) -> tuple[str, str]:
+    """Read the table column and property name out of a materializer column comment.
+
+    The convention is ``column_materializer::<table_column>::<property_name>``, and the
+    query above excludes the two-part ``elements_chain`` family, so every comment that
+    reaches here must have three parts. An unrecognized comment raises instead of being
+    skipped: this feeds a deletion request, where dropping a column from the result would
+    silently leave deleted properties in place.
+    """
+    parts = comment.split("::")
+    if len(parts) != 3 or parts[0] != "column_materializer":
+        raise ValueError(f"Unrecognized materialized column comment: {comment!r}")
+    return parts[1], parts[2]
 
 
 def _create_local_staging_table(
