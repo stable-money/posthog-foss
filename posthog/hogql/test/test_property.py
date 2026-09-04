@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from django.conf import settings
 
+from ee.clickhouse.materialized_columns.columns import materialize
 from parameterized import parameterized
 
 from posthog.schema import (
@@ -39,7 +40,12 @@ from posthog.hogql.property import (
 from posthog.hogql.query import execute_hogql_query
 from posthog.hogql.visitor import clear_locations
 
-from posthog.constants import TREND_FILTER_TYPE_ACTIONS, TREND_FILTER_TYPE_EVENTS, PropertyOperatorType
+from posthog.constants import (
+    PROPERTY_VALUE_NOT_SET_SENTINEL,
+    TREND_FILTER_TYPE_ACTIONS,
+    TREND_FILTER_TYPE_EVENTS,
+    PropertyOperatorType,
+)
 from posthog.models import Property, PropertyDefinition, Team
 from posthog.models.property import PropertyGroup
 from posthog.utils import relative_date_parse
@@ -49,8 +55,6 @@ from products.cohorts.backend.models.cohort import Cohort
 from products.data_tools.backend.models.join import DataWarehouseJoin
 from products.event_definitions.backend.models.property_definition import PropertyType
 from products.warehouse_sources.backend.facade.models import DataWarehouseCredential, DataWarehouseTable
-
-from ee.clickhouse.materialized_columns.columns import materialize
 
 elements_chain_match = lambda x: parse_expr("elements_chain =~ {regex}", {"regex": ast.Constant(value=str(x))})
 elements_chain_imatch = lambda x: parse_expr("elements_chain =~* {regex}", {"regex": ast.Constant(value=str(x))})
@@ -410,6 +414,147 @@ class TestProperty(BaseTest):
         assert isinstance(result.right.args[0], ast.Constant)
         assert result.right.args[0].value == expected_rhs
 
+    def test_property_to_expr_is_date_between_operator(self):
+        # Inclusive both ends: >= from AND <= to, exactly mirroring the numeric BETWEEN shape
+        # but through the date-coercing _force_datetime/_resolve_date_value helpers.
+        self.assertEqual(
+            self._property_to_expr(
+                {
+                    "type": "event",
+                    "key": "start_date",
+                    "operator": "is_date_between",
+                    "value": ["2024-01-01", "2024-01-31"],
+                }
+            ),
+            self._parse_expr(
+                "(toDateTime(toString(properties.start_date)) >= toDateTime('2024-01-01') "
+                "AND toDateTime(toString(properties.start_date)) <= toDateTime('2024-01-31 23:59:59'))"
+            ),
+        )
+
+    def test_property_to_expr_is_date_not_between_operator(self):
+        # Negated via NOT(AND(...)) -- not OR(Lt, Gt) -- so a missing property (both inner
+        # comparisons ifNull-false) still ends up true, instead of being silently dropped.
+        self.assertEqual(
+            self._property_to_expr(
+                {
+                    "type": "event",
+                    "key": "start_date",
+                    "operator": "is_date_not_between",
+                    "value": ["2024-01-01", "2024-01-31"],
+                }
+            ),
+            self._parse_expr(
+                "not((toDateTime(toString(properties.start_date)) >= toDateTime('2024-01-01') "
+                "AND toDateTime(toString(properties.start_date)) <= toDateTime('2024-01-31 23:59:59')))"
+            ),
+        )
+
+    def test_property_to_expr_is_date_between_date_only_upper_bound_is_end_of_day(self):
+        # The date picker emits YYYY-MM-DD. Taken literally that means midnight, so a bare
+        # `<= '2024-01-31'` would exclude everything on the final day the user selected except
+        # the first instant of it. Widened to 23:59:59, matching the convention in
+        # posthog/models/property/util.py for a date-only is_date_after bound.
+        expr = self._property_to_expr(
+            {"type": "event", "key": "start_date", "operator": "is_date_between", "value": ["2024-01-01", "2024-01-31"]}
+        )
+        rendered = repr(expr)
+        assert "2024-01-31 23:59:59" in rendered, rendered
+        # the lower bound stays at midnight -- the range is [start of from-day, end of to-day]
+        assert "2024-01-01 23:59:59" not in rendered, rendered
+
+    def test_property_to_expr_is_date_between_explicit_time_is_not_widened(self):
+        # Only a bare date is widened. If the caller supplied a time, it is honoured exactly.
+        expr = self._property_to_expr(
+            {
+                "type": "event",
+                "key": "start_date",
+                "operator": "is_date_between",
+                "value": ["2024-01-01 08:00:00", "2024-01-31 20:00:00"],
+            }
+        )
+        rendered = repr(expr)
+        assert "2024-01-31 20:00:00" in rendered, rendered
+        assert "23:59:59" not in rendered, rendered
+
+    def test_property_to_expr_is_date_between_uses_team_timezone(self):
+        # Both the property read and the bounds must land in the team's timezone, or a range
+        # picked by an IST user silently means a UTC range -- a 5h30m skew at both ends.
+        self.team.timezone = "Asia/Kolkata"
+        self.team.save()
+        query = ast.SelectQuery(
+            select=[ast.Constant(value=1)],
+            select_from=ast.JoinExpr(table=ast.Field(chain=["events"])),
+            where=self._property_to_expr(
+                {
+                    "type": "event",
+                    "key": "start_date",
+                    "operator": "is_date_between",
+                    "value": ["2024-01-01", "2024-01-31"],
+                },
+                team=self.team,
+            ),
+        )
+        context = HogQLContext(team_id=self.team.pk, enable_select_queries=True)
+        sql, _ = prepare_and_print_ast(query, context=context, dialect="clickhouse")
+        # Timezones and literals are parameterised, not inlined, so assert on the bound values.
+        params = list(context.values.values())
+        assert "Asia/Kolkata" in params, params
+        assert "2024-01-01" in params, params
+        assert "2024-01-31 23:59:59" in params, params
+        # Both the property read and each bound must be timezone-qualified, or an IST user's
+        # range would silently be evaluated as a UTC one -- a 5h30m skew at both ends.
+        assert sql.count("parseDateTime64BestEffortOrNull") == 2, sql
+        assert sql.count("toDateTime(") == 2, sql
+
+    def test_property_to_expr_is_date_between_operator_inclusive_boundary(self):
+        # A value exactly ON either boundary must satisfy is_date_between: both ends compile to
+        # >=/<= (GtEq/LtEq), not >/< (Gt/Lt) -- that's what makes the boundary itself included.
+        between_result = self._property_to_expr(
+            {"type": "event", "key": "start_date", "operator": "is_date_between", "value": ["2024-01-01", "2024-01-31"]}
+        )
+        assert isinstance(between_result, ast.And)
+        assert [c.op for c in between_result.exprs] == [ast.CompareOperationOp.GtEq, ast.CompareOperationOp.LtEq]
+
+        # Its negation must therefore treat that same boundary as NOT matching "not between":
+        # the inner AND uses the identical inclusive GtEq/LtEq pair, wrapped in NOT(...).
+        not_between_result = self._property_to_expr(
+            {
+                "type": "event",
+                "key": "start_date",
+                "operator": "is_date_not_between",
+                "value": ["2024-01-01", "2024-01-31"],
+            }
+        )
+        assert isinstance(not_between_result, ast.Call) and not_between_result.name == "not"
+        inner = not_between_result.args[0]
+        assert isinstance(inner, ast.And)
+        assert [c.op for c in inner.exprs] == [ast.CompareOperationOp.GtEq, ast.CompareOperationOp.LtEq]
+
+    def test_property_to_expr_is_date_between_control_unchanged(self):
+        # Control: adding is_date_between/is_date_not_between must not change the existing
+        # is_date_before / numeric between / not_between shapes.
+        self.assertEqual(
+            self._property_to_expr(
+                {"type": "event", "key": "a", "value": "2026-03-19T14:00:00Z", "operator": "is_date_before"}
+            ),
+            ast.CompareOperation(
+                op=ast.CompareOperationOp.Lt,
+                left=ast.Call(
+                    name="toDateTime", args=[ast.Call(name="toString", args=[ast.Field(chain=["properties", "a"])])]
+                ),
+                right=ast.Call(name="toDateTime", args=[ast.Constant(value="2026-03-19T14:00:00Z")]),
+            ),
+        )
+        self.assertEqual(
+            self._property_to_expr({"type": "event", "key": "age", "operator": "between", "value": [18, 65]}),
+            self._parse_expr("(properties.age >= 18 AND properties.age <= 65)"),
+        )
+        self.assertEqual(
+            self._property_to_expr({"type": "event", "key": "score", "operator": "not_between", "value": [0, 100]}),
+            self._parse_expr("(properties.score < 0 OR properties.score > 100)"),
+        )
+
     def test_property_to_expr_event_list(self):
         # positive
         self.assertEqual(
@@ -467,6 +612,82 @@ class TestProperty(BaseTest):
             ),
         )
         self.assertIs(1, a.exprs[1].args[1].value)
+
+    def test_property_to_expr_not_set_sentinel(self):
+        # control: no sentinel in the list, output is unchanged from test_property_to_expr_event_list
+        self.assertEqual(
+            self._property_to_expr({"type": "event", "key": "a", "value": ["b", "c"], "operator": "exact"}),
+            self._parse_expr("properties.a in ('b', 'c')"),
+        )
+        self.assertEqual(
+            self._property_to_expr({"type": "event", "key": "a", "value": ["b", "c"], "operator": "in"}),
+            self._parse_expr("properties.a in ('b', 'c')"),
+        )
+
+        # exact with [b, c, sentinel] -> in (b, c) OR is null
+        self.assertEqual(
+            self._property_to_expr(
+                {"type": "event", "key": "a", "value": ["b", "c", PROPERTY_VALUE_NOT_SET_SENTINEL], "operator": "exact"}
+            ),
+            self._parse_expr("properties.a in ('b', 'c') or properties.a = NULL"),
+        )
+        # is_not with [b, c, sentinel] -> not in (b, c) AND is not null
+        self.assertEqual(
+            self._property_to_expr(
+                {
+                    "type": "event",
+                    "key": "a",
+                    "value": ["b", "c", PROPERTY_VALUE_NOT_SET_SENTINEL],
+                    "operator": "is_not",
+                }
+            ),
+            self._parse_expr("properties.a not in ('b', 'c') and properties.a != NULL"),
+        )
+        # in / not_in share the exact/is_not code path
+        self.assertEqual(
+            self._property_to_expr(
+                {"type": "event", "key": "a", "value": ["b", "c", PROPERTY_VALUE_NOT_SET_SENTINEL], "operator": "in"}
+            ),
+            self._parse_expr("properties.a in ('b', 'c') or properties.a = NULL"),
+        )
+        self.assertEqual(
+            self._property_to_expr(
+                {
+                    "type": "event",
+                    "key": "a",
+                    "value": ["b", "c", PROPERTY_VALUE_NOT_SET_SENTINEL],
+                    "operator": "not_in",
+                }
+            ),
+            self._parse_expr("properties.a not in ('b', 'c') and properties.a != NULL"),
+        )
+
+        # sentinel alone (as a list) collapses to exactly what is_not_set / is_set produce
+        self.assertEqual(
+            self._property_to_expr(
+                {"type": "event", "key": "a", "value": [PROPERTY_VALUE_NOT_SET_SENTINEL], "operator": "exact"}
+            ),
+            self._property_to_expr({"type": "event", "key": "a", "value": "b", "operator": "is_not_set"}),
+        )
+        self.assertEqual(
+            self._property_to_expr(
+                {"type": "event", "key": "a", "value": [PROPERTY_VALUE_NOT_SET_SENTINEL], "operator": "is_not"}
+            ),
+            self._property_to_expr({"type": "event", "key": "a", "value": "b", "operator": "is_set"}),
+        )
+        # sentinel alone as a bare scalar (not wrapped in a list) hits the same single-value path
+        self.assertEqual(
+            self._property_to_expr(
+                {"type": "event", "key": "a", "value": PROPERTY_VALUE_NOT_SET_SENTINEL, "operator": "exact"}
+            ),
+            self._property_to_expr({"type": "event", "key": "a", "value": "b", "operator": "is_not_set"}),
+        )
+        self.assertEqual(
+            self._property_to_expr(
+                {"type": "event", "key": "a", "value": PROPERTY_VALUE_NOT_SET_SENTINEL, "operator": "is_not"}
+            ),
+            self._property_to_expr({"type": "event", "key": "a", "value": "b", "operator": "is_set"}),
+        )
 
     def test_property_to_expr_event_list_starts_with_ends_with(self):
         # positive operators combine multiple values with OR
@@ -1941,6 +2162,8 @@ class TestProperty(BaseTest):
         PropertyOperator.IS_NOT_SET: "",
         PropertyOperator.BETWEEN: [1, 10],
         PropertyOperator.NOT_BETWEEN: [1, 10],
+        PropertyOperator.IS_DATE_BETWEEN: ["2024-01-01", "2024-01-31"],
+        PropertyOperator.IS_DATE_NOT_BETWEEN: ["2024-01-01", "2024-01-31"],
         PropertyOperator.IN_: ["a", "b"],
         PropertyOperator.NOT_IN: ["a", "b"],
         PropertyOperator.SEMVER_EQ: "1.2.3",

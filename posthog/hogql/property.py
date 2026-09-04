@@ -55,7 +55,12 @@ from posthog.hogql.utils import map_virtual_properties
 from posthog.hogql.visitor import CloningVisitor, TraversingVisitor, clone_expr
 
 from posthog.clickhouse.query_tagging import tag_contains_user_hogql
-from posthog.constants import AUTOCAPTURE_EVENT, TREND_FILTER_TYPE_ACTIONS, PropertyOperatorType
+from posthog.constants import (
+    AUTOCAPTURE_EVENT,
+    PROPERTY_VALUE_NOT_SET_SENTINEL,
+    TREND_FILTER_TYPE_ACTIONS,
+    PropertyOperatorType,
+)
 from posthog.dataclasses import frozen
 from posthog.interval_specs import get_interval_func
 from posthog.models import Property, PropertyDefinition, Team
@@ -482,6 +487,19 @@ def _coerce_numeric_value_for_string_property(value: ValueT, property: Property,
     return cast(ValueT, _stringify(value))
 
 
+def _end_of_day_if_date_only(value: ValueT) -> ValueT:
+    """Widen a date-only upper bound to 23:59:59 of that day.
+
+    The date picker emits `YYYY-MM-DD`, which as a datetime means midnight, so a bare
+    `<= '2024-01-31'` excludes all but the first instant of the final day the user selected.
+    Matches the existing convention in posthog/models/property/util.py, which rewrites a
+    date-only is_date_after bound with subtractSeconds(addDays(toDate(v), 1), 1).
+    """
+    if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return value + " 23:59:59"
+    return value
+
+
 def _resolve_date_value(value: ValueT, team: Team) -> ValueT:
     """Resolve a date value for IS_DATE_* operators.
 
@@ -556,6 +574,19 @@ def _validate_between_values(value: ValueT, operator: PropertyOperator) -> TypeG
     return True
 
 
+def _validate_date_between_values(value: ValueT, operator: PropertyOperator) -> TypeGuard[list[str]]:
+    """Arity check for the date-range operators.
+
+    Deliberately NOT _validate_between_values: that one coerces both ends with float(), so any
+    date string raises "requires numeric values". Ordering is left alone -- the bounds may be
+    relative dates ("-7d") that are not comparable until _resolve_date_value has run, and a
+    reversed range is a legitimate (if empty) query rather than a client error.
+    """
+    if not isinstance(value, list) or len(value) != 2:
+        raise QueryError(f"{operator} operator requires a two-element array [from, to]")
+    return True
+
+
 def _multi_search_found(search_call: ast.Call) -> ast.CompareOperation:
     """Create comparison operation to check if multiSearchAnyCaseInsensitive found a match."""
     return ast.CompareOperation(op=ast.CompareOperationOp.Gt, left=search_call, right=ast.Constant(value=0))
@@ -590,7 +621,13 @@ def _validate_regex(value: ValueT) -> None:
 
 
 def _expr_to_compare_op(
-    expr: ast.Expr, value: ValueT, operator: PropertyOperator, property: Property, is_json_field: bool, team: Team
+    expr: ast.Expr,
+    value: ValueT,
+    operator: PropertyOperator,
+    property: Property,
+    is_json_field: bool,
+    team: Team,
+    honor_not_set: bool = True,
 ) -> ast.Expr:
     if operator == PropertyOperator.IS_SET:
         return ast.CompareOperation(
@@ -684,6 +721,10 @@ def _expr_to_compare_op(
             ],
         )
     elif operator == PropertyOperator.EXACT:
+        if honor_not_set and value == PROPERTY_VALUE_NOT_SET_SENTINEL:
+            # "(not set)" as the sole value: same as IS_NOT_SET, and skips the numeric/bool
+            # coercion helpers below since there's no real value for them to coerce.
+            return ast.CompareOperation(op=ast.CompareOperationOp.Eq, left=expr, right=ast.Constant(value=None))
         return ast.CompareOperation(
             op=ast.CompareOperationOp.Eq,
             left=expr,
@@ -701,6 +742,10 @@ def _expr_to_compare_op(
             right=_force_datetime(ast.Constant(value=_resolve_date_value(value, team))),
         )
     elif operator == PropertyOperator.IS_NOT:
+        if honor_not_set and value == PROPERTY_VALUE_NOT_SET_SENTINEL:
+            # "(not set)" as the sole value: same as IS_SET, and skips the numeric/bool
+            # coercion helpers below since there's no real value for them to coerce.
+            return ast.CompareOperation(op=ast.CompareOperationOp.NotEq, left=expr, right=ast.Constant(value=None))
         return ast.CompareOperation(
             op=ast.CompareOperationOp.NotEq,
             left=expr,
@@ -727,6 +772,47 @@ def _expr_to_compare_op(
             op=ast.CompareOperationOp.Gt,
             left=_force_datetime(expr),
             right=_force_datetime(ast.Constant(value=_resolve_date_value(value, team))),
+        )
+    elif operator == PropertyOperator.IS_DATE_BETWEEN:
+        # QueryError (400 with a message) rather than an AssertionError (uncaught 500).
+        _validate_date_between_values(value, operator)
+        assert isinstance(value, list)
+        from_expr = _force_datetime(ast.Constant(value=_resolve_date_value(value[0], team)))
+        to_expr = _force_datetime(ast.Constant(value=_end_of_day_if_date_only(_resolve_date_value(value[1], team))))
+        return ast.And(
+            exprs=[
+                ast.CompareOperation(op=ast.CompareOperationOp.GtEq, left=_force_datetime(expr), right=from_expr),
+                ast.CompareOperation(op=ast.CompareOperationOp.LtEq, left=_force_datetime(expr), right=to_expr),
+            ]
+        )
+    elif operator == PropertyOperator.IS_DATE_NOT_BETWEEN:
+        # Negate via NOT(AND(...)) rather than OR(Lt, Gt): each inner comparison is printed as
+        # `ifNull(op, 0)`, so AND always resolves to a definite 0/1 -- including when the
+        # property is absent (both sides false -> AND false -> NOT true), which keeps rows
+        # whose date is missing. A missing date is genuinely not inside the range, so this is
+        # the semantics we want.
+        #
+        # NOTE this DIVERGES from the numeric NOT_BETWEEN, which prints OR(Lt, Gt) and so
+        # resolves false on a missing property, dropping those rows. The divergence is
+        # deliberate and asserted in test_property.py; changing the numeric operator to match
+        # would alter the behaviour of every existing numeric filter, which is out of scope.
+        # QueryError (400 with a message) rather than an AssertionError (uncaught 500).
+        _validate_date_between_values(value, operator)
+        assert isinstance(value, list)
+        from_expr = _force_datetime(ast.Constant(value=_resolve_date_value(value[0], team)))
+        to_expr = _force_datetime(ast.Constant(value=_end_of_day_if_date_only(_resolve_date_value(value[1], team))))
+        return ast.Call(
+            name="not",
+            args=[
+                ast.And(
+                    exprs=[
+                        ast.CompareOperation(
+                            op=ast.CompareOperationOp.GtEq, left=_force_datetime(expr), right=from_expr
+                        ),
+                        ast.CompareOperation(op=ast.CompareOperationOp.LtEq, left=_force_datetime(expr), right=to_expr),
+                    ]
+                )
+            ],
         )
     elif operator == PropertyOperator.LTE or operator == PropertyOperator.MAX:
         return ast.CompareOperation(op=ast.CompareOperationOp.LtEq, left=expr, right=ast.Constant(value=value))
@@ -1321,6 +1407,8 @@ def property_to_expr(
         if isinstance(value, list) and operator not in (
             PropertyOperator.BETWEEN,
             PropertyOperator.NOT_BETWEEN,
+            PropertyOperator.IS_DATE_BETWEEN,
+            PropertyOperator.IS_DATE_NOT_BETWEEN,
             PropertyOperator.ICONTAINS,
             PropertyOperator.NOT_ICONTAINS,
             # starts_with/ends_with intentionally excluded: no ClickHouse anchored multi-search
@@ -1348,12 +1436,45 @@ def property_to_expr(
                         if (is_exception_string_array_property or is_visited_page_property)
                         else expr
                     )
-                    coerced = cast(list, _coerce_numeric_value_for_string_property(value, property, team))
-                    compare_op = ast.CompareOperation(
-                        op=op,
-                        left=left,
-                        right=ast.Tuple(exprs=[ast.Constant(value=v) for v in coerced]),
+
+                    # "(not set)" only means something against the property's own value, not an
+                    # element of an extracted array (exception types / visited pages) -- those two
+                    # keep the sentinel as a literal value, same as before.
+                    has_not_set = (
+                        not (is_exception_string_array_property or is_visited_page_property)
+                        and PROPERTY_VALUE_NOT_SET_SENTINEL in value
                     )
+
+                    if has_not_set:
+                        rest = [v for v in value if v != PROPERTY_VALUE_NOT_SET_SENTINEL]
+                        null_check = ast.CompareOperation(
+                            op=ast.CompareOperationOp.Eq
+                            if op == ast.CompareOperationOp.In
+                            else ast.CompareOperationOp.NotEq,
+                            left=left,
+                            right=ast.Constant(value=None),
+                        )
+                        if not rest:
+                            compare_op = null_check
+                        else:
+                            coerced = cast(list, _coerce_numeric_value_for_string_property(rest, property, team))
+                            in_check = ast.CompareOperation(
+                                op=op,
+                                left=left,
+                                right=ast.Tuple(exprs=[ast.Constant(value=v) for v in coerced]),
+                            )
+                            compare_op = (
+                                ast.Or(exprs=[in_check, null_check])
+                                if op == ast.CompareOperationOp.In
+                                else ast.And(exprs=[in_check, null_check])
+                            )
+                    else:
+                        coerced = cast(list, _coerce_numeric_value_for_string_property(value, property, team))
+                        compare_op = ast.CompareOperation(
+                            op=op,
+                            left=left,
+                            right=ast.Tuple(exprs=[ast.Constant(value=v) for v in coerced]),
+                        )
 
                     if is_exception_string_array_property:
                         return parse_expr(
@@ -1425,6 +1546,9 @@ def property_to_expr(
             team=team,
             property=property,
             is_json_field=property.type != "session",
+            # "(not set)" is only meaningful against the property's own value, not an element of
+            # an extracted array (exception types / visited pages) -- see has_not_set above.
+            honor_not_set=not (is_exception_string_array_property or is_visited_page_property),
         )
 
         if is_exception_string_array_property:
@@ -1561,6 +1685,8 @@ def bound_property_to_expr(property: Property, expr: ast.Expr, team: Team) -> as
     if isinstance(value, list) and operator not in (
         PropertyOperator.BETWEEN,
         PropertyOperator.NOT_BETWEEN,
+        PropertyOperator.IS_DATE_BETWEEN,
+        PropertyOperator.IS_DATE_NOT_BETWEEN,
         PropertyOperator.ICONTAINS,
         PropertyOperator.NOT_ICONTAINS,
     ):
@@ -1910,5 +2036,10 @@ def operator_is_negative(operator: PropertyOperator) -> bool:
         PropertyOperator.NOT_REGEX,
         PropertyOperator.IS_NOT_SET,
         PropertyOperator.NOT_BETWEEN,
+        # IS_DATE_NOT_BETWEEN is deliberately NOT listed. operator_is_negative() drives the
+        # logs product's negative resource-attribute branch, which inverts the operator via a
+        # lookup dict and then wraps the subquery in NOT IN. That dict has no entry for this
+        # operator, so listing it here negates the filter twice and returns exactly the rows
+        # the user excluded. NOT_BETWEEN is in that dict, which is why it can be listed.
         PropertyOperator.NOT_IN,
     ]

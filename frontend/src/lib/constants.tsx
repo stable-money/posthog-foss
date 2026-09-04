@@ -119,6 +119,12 @@ export const PERSON_DISPLAY_NAME_COLUMN_NAME = 'person_display_name -- Person'
 // Sync with .../api/person.py and cdp/utils.ts
 export const PERSON_DEFAULT_DISPLAY_NAME_PROPERTIES = ['email', 'name', 'username']
 
+// Sentinel value a property filter can carry alongside real values to mean "(not set)" —
+// i.e. the property is NULL. Distinct from the display text so a genuine event value of
+// "(not set)" can't collide with it. Mirrored in posthog/constants.py.
+export const PROPERTY_VALUE_NOT_SET_SENTINEL = '$$_posthog_not_set_$$'
+export const PROPERTY_VALUE_NOT_SET_LABEL = '(not set)'
+
 // Feature Flags & Experiments
 export const INSTANTLY_AVAILABLE_PROPERTIES = [
     '$geoip_city_name',

@@ -160,6 +160,8 @@ def _list_aware_expr_to_compare_op(
     if not isinstance(value, list) or operator in (
         PropertyOperator.BETWEEN,
         PropertyOperator.NOT_BETWEEN,
+        PropertyOperator.IS_DATE_BETWEEN,
+        PropertyOperator.IS_DATE_NOT_BETWEEN,
         PropertyOperator.ICONTAINS,
         PropertyOperator.NOT_ICONTAINS,
         PropertyOperator.ICONTAINS_MULTI,

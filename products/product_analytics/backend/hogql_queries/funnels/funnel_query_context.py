@@ -8,6 +8,8 @@ from posthog.schema import (
     FunnelsActorsQuery,
     FunnelsFilter,
     FunnelsQuery,
+    FunnelVizType,
+    FunnelWindowBoundary,
     HogQLQueryModifiers,
     IntervalType,
 )
@@ -16,9 +18,11 @@ from posthog.hogql.constants import LimitContext
 from posthog.hogql.timings import HogQLTimings
 
 from posthog.hogql_queries.query_context import QueryContext
+from posthog.hogql_queries.utils.query_date_range import QueryDateRange
 from posthog.models.property.util import box_value
 from posthog.models.team.team import Team
 from posthog.models.user import User
+from posthog.utils import DATERANGE_MAP
 
 
 class FunnelQueryContext(QueryContext):
@@ -103,7 +107,28 @@ class FunnelQueryContext(QueryContext):
         return self.query.funnelsFilter or FunnelsFilter()
 
     @property
+    def holdConstantBreakdown(self) -> bool:
+        """Mixpanel-style "hold property constant". See FunnelsFilter.funnelHoldConstantBreakdown.
+
+        Guarded by ValidateFunnelHoldConstantBreakdown, but insight-actors and correlation queries
+        build a context without running the validators, so the unsupported breakdown shapes are
+        checked here too rather than emitting SQL that holds the wrong thing constant.
+        """
+        if not self.funnelsFilter.funnelHoldConstantBreakdown:
+            return False
+        if self.funnelsFilter.funnelVizType not in (FunnelVizType.STEPS, None):
+            return False
+        breakdown = self.breakdownFilter.breakdown
+        if not breakdown or not isinstance(breakdown, str | int):
+            return False
+        return self.breakdownType != BreakdownType.COHORT
+
+    @property
     def breakdownAttributionType(self) -> BreakdownAttributionType:
+        if self.holdConstantBreakdown:
+            # Holding a value constant is a statement about every step, so each event has to be
+            # attributed to its own value rather than to the person's first or last one.
+            return BreakdownAttributionType.ALL_EVENTS
         return self.funnelsFilter.breakdownAttributionType or BreakdownAttributionType.FIRST_TOUCH
 
     @property
@@ -117,6 +142,24 @@ class FunnelQueryContext(QueryContext):
     @property
     def funnelWindowIntervalUnit(self) -> FunnelConversionWindowTimeUnit:
         return self.funnelsFilter.funnelWindowIntervalUnit or FunnelConversionWindowTimeUnit.DAY
+
+    @property
+    def query_date_range(self) -> QueryDateRange:
+        return QueryDateRange(
+            date_range=self.query.dateRange,
+            team=self.team,
+            interval=self.query.interval,
+            now=self.now,
+        )
+
+    @property
+    def conversion_window_seconds(self) -> int:
+        return int(self.funnelWindowInterval * DATERANGE_MAP[self.funnelWindowIntervalUnit].total_seconds())
+
+    @property
+    def funnelWindowBoundary(self) -> FunnelWindowBoundary:
+        """Whether the conversion window may run past date_to. See FunnelsFilter.funnelWindowBoundary."""
+        return self.funnelsFilter.funnelWindowBoundary or FunnelWindowBoundary.CLIP
 
     @property
     def max_steps(self) -> int:

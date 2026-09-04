@@ -73,6 +73,8 @@ export const dateTimeOperatorMap: Record<string, string> = {
     is_date_exact: '= equals',
     is_date_before: '< before',
     is_date_after: '> after',
+    is_date_between: '↔ between',
+    is_date_not_between: '↮ not between',
     is_set: '✓ is set',
     is_not_set: '✕ is not set',
 }
@@ -164,6 +166,30 @@ const operatorMappingChoice: Record<keyof typeof PropertyType, Record<string, st
     Semver: semverOperatorMap,
 }
 
+/**
+ * Operators the feature-flag matcher cannot evaluate.
+ *
+ * Flag release conditions are matched outside HogQL (Rust/Python matcher), and the backend
+ * rejects anything outside FEATURE_FLAG_SUPPORTED_OPERATORS in
+ * products/feature_flags/backend/api/filters_schema.py -- which is the source of truth; keep
+ * this in sync with it. Without this, the dropdown happily offers a range operator that the
+ * save then refuses. Note `between`/`not_between` were already leaking this way before the
+ * date-range operators existed.
+ */
+export const FLAG_UNSUPPORTED_OPERATORS: PropertyOperator[] = [
+    PropertyOperator.Between,
+    PropertyOperator.NotBetween,
+    PropertyOperator.IsDateBetween,
+    PropertyOperator.IsDateNotBetween,
+]
+
+/** Every operator except the ones the flag matcher rejects. */
+export function operatorsSupportedByFeatureFlags(): PropertyOperator[] {
+    return (Object.values(PropertyOperator) as PropertyOperator[]).filter(
+        (op) => !FLAG_UNSUPPORTED_OPERATORS.includes(op)
+    )
+}
+
 export function chooseOperatorMap(propertyType: PropertyType | undefined): Record<string, string> {
     let choice = genericOperatorMap
     if (propertyType) {
@@ -223,11 +249,23 @@ export function isOperatorRange(operator: PropertyOperator): boolean {
 }
 
 export function isOperatorDate(operator: PropertyOperator): boolean {
-    return [PropertyOperator.IsDateBefore, PropertyOperator.IsDateAfter, PropertyOperator.IsDateExact].includes(
-        operator
-    )
+    return [
+        PropertyOperator.IsDateBefore,
+        PropertyOperator.IsDateAfter,
+        PropertyOperator.IsDateExact,
+        PropertyOperator.IsDateBetween,
+        PropertyOperator.IsDateNotBetween,
+    ].includes(operator)
 }
 
 export function isOperatorBetween(operator: PropertyOperator): boolean {
     return [PropertyOperator.Between, PropertyOperator.NotBetween].includes(operator)
+}
+
+// Deliberately distinct from isOperatorBetween: that one drives the numeric two-input control
+// (PropertyFilterBetween) with no datetime coercion. Date ranges get their own operator pair
+// (is_date_between / is_date_not_between) rather than overloading Between, so they render two
+// date pickers and reach the backend's date-coercion path instead of a string compare.
+export function isOperatorDateBetween(operator: PropertyOperator): boolean {
+    return [PropertyOperator.IsDateBetween, PropertyOperator.IsDateNotBetween].includes(operator)
 }

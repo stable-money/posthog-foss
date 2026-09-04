@@ -153,6 +153,10 @@ DATA_WAREHOUSE_ENTITIES = "data_warehouse_entities"
 EXCLUSIONS = "exclusions"
 PROPERTIES = "properties"
 PROPERTY_GROUPS = "property_groups"
+# Sentinel value a property filter can carry alongside real values to mean "(not set)" —
+# i.e. the property is NULL. Distinct from the display text so a genuine event value of
+# "(not set)" can't collide with it. Mirrored in frontend/src/lib/constants.tsx.
+PROPERTY_VALUE_NOT_SET_SENTINEL = "$$_posthog_not_set_$$"
 SELECTOR = "selector"
 INTERVAL = "interval"
 SMOOTHING_INTERVALS = "smoothing_intervals"
