@@ -128,6 +128,7 @@ from posthog.schema_enums import (
     FunnelPathType as FunnelPathType,
     FunnelStepReference as FunnelStepReference,
     FunnelVizType as FunnelVizType,
+    FunnelWindowBoundary as FunnelWindowBoundary,
     Goal as Goal,
     GoogleAdsDefaultSources as GoogleAdsDefaultSources,
     GradientScaleMode as GradientScaleMode,
@@ -28634,6 +28635,22 @@ class FunnelsFilter(BaseModel):
     ) = []
     funnelAggregateByHogQL: str | None = None
     funnelFromStep: int | None = None
+    funnelHoldConstantBreakdown: bool | None = Field(
+        default=False,
+        description=(
+            "Hold the breakdown property constant across every step, instead of"
+            " splitting the funnel by it.\nA person only converts if one single value"
+            " of the breakdown property carries them through the\nwhole funnel —"
+            ' "viewed product X then bought product X", never "viewed X then bought Y".'
+            " The\nresult is one funnel, not one per value, and a person is counted"
+            " once even if several values\nwould have carried them through. Mixpanel"
+            ' calls this "hold property constant".\n\nRequires a single-property'
+            " event/person/session breakdown; cohort and multi-property\nbreakdowns are"
+            " rejected. Forces `breakdownAttributionType` to `all_events`, and"
+            " events\nmissing the property are excluded rather than grouped under an"
+            " empty value."
+        ),
+    )
     funnelOrderType: StepOrderValue | None = StepOrderValue.ORDERED
     funnelStepReference: FunnelStepReference | None = FunnelStepReference.TOTAL
     funnelToStep: int | None = Field(
@@ -28641,6 +28658,18 @@ class FunnelsFilter(BaseModel):
         description=("To select the range of steps for trends & time to convert funnels, 0-indexed"),
     )
     funnelVizType: FunnelVizType | None = FunnelVizType.STEPS
+    funnelWindowBoundary: FunnelWindowBoundary | None = Field(
+        default=FunnelWindowBoundary.CLIP,
+        description=(
+            "Whether the conversion window is allowed to run past the end of the date"
+            " range.\n`clip` is PostHog's historical behaviour: every event of the"
+            " funnel, later steps included,\nhas to fall inside the date range, so"
+            " anyone entering near `date_to` is counted as a\ndrop-off before their"
+            " conversion window has actually elapsed.\n`extend` bounds only the first"
+            " step by the date range and lets the remaining steps land up\nto one"
+            " conversion window after `date_to` — the semantics Mixpanel uses."
+        ),
+    )
     funnelWindowInterval: int | None = 14
     funnelWindowIntervalUnit: FunnelConversionWindowTimeUnit | None = FunnelConversionWindowTimeUnit.DAY
     goalLines: list[GoalLine] | None = Field(default=None, description="Goal Lines")
