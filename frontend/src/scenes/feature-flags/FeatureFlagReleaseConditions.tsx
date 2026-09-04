@@ -27,6 +27,7 @@ import { LemonTag } from 'lib/lemon-ui/LemonTag/LemonTag'
 import { Spinner } from 'lib/lemon-ui/Spinner/Spinner'
 import { dateFilterToText, dateStringToComponents } from 'lib/utils/dateFilters'
 import { clamp } from 'lib/utils/numbers'
+import { operatorsSupportedByFeatureFlags } from 'lib/utils/operators'
 import { capitalizeFirstLetter, pluralize } from 'lib/utils/strings'
 import { FeatureFlagConditionWarning } from 'scenes/feature-flags/FeatureFlagConditionWarning'
 import { FeatureFlagNoConditionsWarning } from 'scenes/feature-flags/FeatureFlagNoConditionsWarning'
@@ -378,6 +379,7 @@ export function FeatureFlagReleaseConditions({
                                 onChange={(properties) => updateConditionSet(index, undefined, properties)}
                                 taxonomicGroupTypes={taxonomicGroupTypes}
                                 taxonomicFilterOptionsFromProp={filtersTaxonomicOptions}
+                                operatorAllowlist={operatorsSupportedByFeatureFlags()}
                                 hasRowOperator={false}
                                 sendAllKeyUpdates
                                 allowRelativeDateOptions

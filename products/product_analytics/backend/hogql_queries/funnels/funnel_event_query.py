@@ -13,6 +13,7 @@ from posthog.schema import (
     FunnelExclusionEventsNode,
     FunnelMathType,
     FunnelsDataWarehouseNode,
+    FunnelWindowBoundary,
     GroupNode,
     StepOrderValue,
 )
@@ -273,7 +274,7 @@ class FunnelEventQuery(DataWarehouseSchemaMixin):
             ast.CompareOperation(
                 op=ast.CompareOperationOp.LtEq,
                 left=ast.Field(chain=["timestamp"]),
-                right=ast.Constant(value=date_range.date_to()),
+                right=self._scan_date_to_expr(),
             ),
             self._day_of_week_filter_expr(ast.Field(chain=["timestamp"])),
         ]
@@ -328,6 +329,12 @@ class FunnelEventQuery(DataWarehouseSchemaMixin):
             return parse_expr(f"0 as step_{step_index}")
 
         condition = self._build_step_query(step_entity, table_entity)
+
+        if step_index == 0:
+            entry_cutoff = self._entry_cutoff_expr(table_entity)
+            if entry_cutoff is not None:
+                condition = ast.And(exprs=[condition, entry_cutoff])
+
         return parse_expr(f"if({{condition}}, 1, 0) as step_{step_index}", placeholders={"condition": condition})
 
     def _get_exclusions_col(
@@ -623,16 +630,51 @@ class FunnelEventQuery(DataWarehouseSchemaMixin):
             return ast.SampleExpr(sample_value=ast.RatioExpr(left=ast.Constant(value=query.samplingFactor)))
 
     def _date_range(self) -> QueryDateRange:
-        team, query, now = self.context.team, self.context.query, self.context.now
+        return self.context.query_date_range
 
-        date_range = QueryDateRange(
-            date_range=query.dateRange,
-            team=team,
-            interval=query.interval,
-            now=now,
+    def _scan_date_to_expr(self) -> ast.Expr:
+        """Upper bound of the event scan.
+
+        In "extend" mode this reaches one conversion window past date_to, so the later steps of
+        someone who entered inside the date range are actually visible instead of being clipped
+        away and counted as a drop-off. It cannot let a new person into the funnel: entry stays
+        pinned to the date range by _entry_cutoff_expr (ordered/strict) or by the earliest-event
+        guard in FunnelUDF (unordered). And it never truncates a legitimate conversion either,
+        since the window is anchored on a first step that is itself at or before date_to.
+        """
+        date_to: ast.Expr = ast.Constant(value=self._date_range().date_to())
+        if self.context.funnelWindowBoundary == FunnelWindowBoundary.EXTEND:
+            date_to = ast.ArithmeticOperation(
+                left=date_to,
+                right=ast.Call(
+                    name="toIntervalSecond",
+                    args=[ast.Constant(value=self.context.conversion_window_seconds)],
+                ),
+                op=ast.ArithmeticOperationOp.Add,
+            )
+        return date_to
+
+    def _entry_cutoff_expr(self, table_entity: Optional[FunnelsDataWarehouseNode] = None) -> ast.Expr | None:
+        """`timestamp <= date_to`, to be ANDed onto the *first* step only, in "extend" mode.
+
+        Without it, widening the scan would also widen who counts as an entrant, inflating step 1.
+        Unordered funnels have no designated first step, so they are excluded here and clamped on
+        their earliest matching event in FunnelUDF._inner_aggregation_query instead.
+        """
+        if self.context.funnelWindowBoundary != FunnelWindowBoundary.EXTEND:
+            return None
+        if self.context.funnelsFilter.funnelOrderType == StepOrderValue.UNORDERED:
+            return None
+        return ast.CompareOperation(
+            op=ast.CompareOperationOp.LtEq,
+            left=self._step_timestamp_expr(table_entity),
+            right=ast.Constant(value=self._date_range().date_to()),
         )
 
-        return date_range
+    def _step_timestamp_expr(self, table_entity: Optional[FunnelsDataWarehouseNode]) -> ast.Expr:
+        if isinstance(table_entity, FunnelsDataWarehouseNode):
+            return self._warehouse_timestamp_expr(table_entity)
+        return ast.Field(chain=[self.EVENT_TABLE_ALIAS, "timestamp"])
 
     def _date_range_expr(self) -> ast.Expr:
         return ast.And(
@@ -645,7 +687,7 @@ class FunnelEventQuery(DataWarehouseSchemaMixin):
                 ast.CompareOperation(
                     op=ast.CompareOperationOp.LtEq,
                     left=ast.Field(chain=[self.EVENT_TABLE_ALIAS, "timestamp"]),
-                    right=ast.Constant(value=self._date_range().date_to()),
+                    right=self._scan_date_to_expr(),
                 ),
             ]
         )

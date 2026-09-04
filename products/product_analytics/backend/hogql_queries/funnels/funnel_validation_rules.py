@@ -2,7 +2,7 @@ from itertools import pairwise
 
 from rest_framework.exceptions import ValidationError
 
-from posthog.schema import FunnelsQuery, FunnelVizType, StepOrderValue
+from posthog.schema import BreakdownType, FunnelsQuery, FunnelVizType, StepOrderValue
 
 from posthog.hogql_queries.utils.entities import is_equal, is_superset
 from posthog.hogql_queries.validation.validation import QueryValidationContext
@@ -176,3 +176,58 @@ class ValidateOptionalFunnelSteps:
                     "An optional step cannot be the same as the following required step.",
                     code=self.code,
                 )
+
+
+class ValidateFunnelHoldConstantBreakdown:
+    """Hold-constant needs exactly one non-cohort breakdown property to hold."""
+
+    code = "funnel_hold_constant_breakdown_invalid"
+
+    def validate(self, context: QueryValidationContext[FunnelsQuery]) -> None:
+        funnels_filter = context.query.funnelsFilter
+        if funnels_filter is None or not funnels_filter.funnelHoldConstantBreakdown:
+            return
+
+        # FunnelTrendsUDF builds its own inner aggregation and never reaches the collapse, so the
+        # flag would quietly do nothing there. FunnelTimeToConvertUDF does reach it, but a
+        # conversion-time histogram of "the value that got furthest" is not a defined thing.
+        if funnels_filter.funnelVizType not in (FunnelVizType.STEPS, None):
+            raise ValidationError(
+                'Holding a property constant is only supported by the "Conversion steps" graph type.',
+                code=self.code,
+            )
+
+        breakdown_filter = context.query.breakdownFilter
+        breakdown = breakdown_filter.breakdown if breakdown_filter is not None else None
+        breakdowns = breakdown_filter.breakdowns if breakdown_filter is not None else None
+
+        # Multi-property breakdowns would need a tuple of values to be equal across steps. The UDF
+        # matches on a single value, so reject rather than silently hold only the first. Checked
+        # before the missing-breakdown case: `breakdowns` leaves `breakdown` unset, which would
+        # otherwise report this as "no breakdown at all".
+        if breakdowns:
+            raise ValidationError(
+                "Holding a property constant supports a single breakdown property, not several.",
+                code=self.code,
+            )
+
+        if not breakdown:
+            raise ValidationError(
+                "Holding a property constant requires a breakdown property to hold.",
+                code=self.code,
+            )
+
+        # A cohort is a set a person is in, not a value an event carries, so there is
+        # nothing to match across steps.
+        if breakdown_filter is not None and breakdown_filter.breakdown_type == BreakdownType.COHORT:
+            raise ValidationError(
+                "Cohort breakdowns cannot be held constant.",
+                code=self.code,
+            )
+
+        # A list-valued `breakdown` is the same multi-property shape by another name.
+        if not isinstance(breakdown, str | int):
+            raise ValidationError(
+                "Holding a property constant supports a single breakdown property, not several.",
+                code=self.code,
+            )

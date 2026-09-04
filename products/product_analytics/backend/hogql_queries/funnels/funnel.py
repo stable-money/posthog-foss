@@ -2,14 +2,13 @@ from typing import Optional, Protocol, cast, runtime_checkable
 
 from rest_framework.exceptions import ValidationError
 
-from posthog.schema import BreakdownAttributionType, BreakdownType, StepOrderValue
+from posthog.schema import BreakdownAttributionType, BreakdownType, FunnelWindowBoundary, StepOrderValue
 
 from posthog.hogql import ast
 from posthog.hogql.constants import DEFAULT_RETURNED_ROWS, HogQLQuerySettings
 from posthog.hogql.parser import parse_expr, parse_select
 
 from posthog.hogql_queries.utils.breakdowns import NOT_IN_COHORT_ID
-from posthog.utils import DATERANGE_MAP
 
 from products.product_analytics.backend.hogql_queries.funnels.base import JOIN_ALGOS, FunnelBase
 from products.product_analytics.backend.hogql_queries.funnels.funnel_query_context import FunnelQueryContext
@@ -51,12 +50,42 @@ class FunnelUDFMixin:
             prop = "prop"
         else:
             prop = "prop_basic"
+        if self.context.holdConstantBreakdown:
+            # Events that don't carry the property have no value to hold, so they must not chain a
+            # funnel of their own. Upstream folds a missing property into an empty-string value,
+            # which here would read as "converted while the property stayed the same" for people
+            # who never had it at all.
+            #
+            # get_breakdown_expr wraps every field in ifNull(..., ''), so '' is the only
+            # missing-marker available -- a genuinely empty value is dropped along with it.
+            #
+            # The shape split below is not cosmetic. For event/person/session/hogql breakdowns
+            # FunnelQueryContext.breakdown boxes even a lone breakdown string into a list, so prop
+            # is an Array and emptiness has to be tested per element -- upstream's plain notEmpty()
+            # tests the array itself, which is never empty (it is an arrayMap over a fixed
+            # breakdown list) and so would let [''] through. A group breakdown's type is absent
+            # from that boxing list, so prop stays a plain String and the array functions would be
+            # a ClickHouse type error.
+            if self._query_has_array_breakdown():
+                return (
+                    f"groupUniqArrayIf(arrayMap(x -> ifNull(x, ''), {prop}), "
+                    f"notEmpty({prop}) and arrayAll(x -> notEmpty(ifNull(x, '')), {prop}))"
+                )
+            # A group breakdown is NOT boxed into a list by FunnelQueryContext.breakdown (its
+            # breakdown_type is absent from that method's list), so prop is a plain String here and
+            # the array functions above would be a type error in ClickHouse.
+            return f"groupUniqArrayIf({prop}, notEmpty({prop}))"
         if self._query_has_array_breakdown():
             return f"groupUniqArrayIf(arrayMap(x -> ifNull(x, ''), {prop}), notEmpty({prop}))"
         return f"groupUniqArray(ifNull({prop}, ''))"
 
     def _default_breakdown_selector(self: FunnelProtocol) -> str:
         return "[]" if self._query_has_array_breakdown() else "''"
+
+
+# Ordering key for picking which of a person's property values represents them once a
+# held-constant breakdown is collapsed: furthest step first, then fastest overall.
+_HOLD_CONSTANT_PICK = "tuple(step_reached, -arraySum(timings))"
 
 
 class FunnelUDF(FunnelUDFMixin, FunnelBase):
@@ -75,9 +104,7 @@ class FunnelUDF(FunnelUDFMixin, FunnelBase):
             self._extra_event_fields.append("person_id")
 
     def conversion_window_limit(self) -> int:
-        return int(
-            self.context.funnelWindowInterval * DATERANGE_MAP[self.context.funnelWindowIntervalUnit].total_seconds()
-        )
+        return self.context.conversion_window_seconds
 
     def matched_event_arrays_selects(self):
         # We use matched events to get timestamps for the funnel as well as recordings
@@ -172,6 +199,19 @@ class FunnelUDF(FunnelUDFMixin, FunnelBase):
             # so we should be safe to pick any of the person_ids
             person_id_select = "any(person_id) as person_id,"
 
+        # Ordered and strict funnels get their entry pinned to the date range on step_0, in
+        # FunnelEventQuery._entry_cutoff_expr. Unordered funnels have no designated first step, so
+        # entry is the earliest matching event and it is pinned here instead. Without this, an
+        # "extend" scan would admit people whose only activity is after date_to.
+        placeholders: dict[str, ast.Expr] = {"inner_event_query": inner_event_query}
+        entry_guard = ""
+        if (
+            self.context.funnelWindowBoundary == FunnelWindowBoundary.EXTEND
+            and self.context.funnelsFilter.funnelOrderType == StepOrderValue.UNORDERED
+        ):
+            entry_guard = " AND min(timestamp) <= {entry_cutoff}"
+            placeholders["entry_cutoff"] = ast.Constant(value=self.context.query_date_range.date_to())
+
         inner_select = parse_select(
             f"""
             SELECT
@@ -201,11 +241,70 @@ class FunnelUDF(FunnelUDFMixin, FunnelBase):
                 aggregation_target
             FROM {{inner_event_query}}
             GROUP BY aggregation_target
-            HAVING step_reached >= 0
+            HAVING step_reached >= 0{entry_guard}
         """,
-            {"inner_event_query": inner_event_query},
+            placeholders,
         )
+
+        if self.context.holdConstantBreakdown:
+            return self._hold_constant_collapse(inner_select)
+
         return inner_select
+
+    def _hold_constant_collapse(self, inner_select: ast.SelectQuery) -> ast.SelectQuery:
+        """Collapse the per-value funnels of a held-constant breakdown into one row per person.
+
+        Attribution is forced to all_events when the breakdown is held constant, so the UDF still
+        returns one row per value of the property, each row a funnel chained through that value
+        alone -- which is the "same value at every step" part of the semantics, and comes for free.
+        What is left is that a person who touched five products would otherwise be counted five
+        times. A person converts if *any* single value carried them the whole way, so the reached-
+        step bitfields are OR'd and everything else is taken from that person's furthest value.
+
+        Aliases are renamed in an outer select rather than assigned in place: `max(x) as x` is a
+        cyclic alias in ClickHouse.
+        """
+        inner_aggregates = [
+            "aggregation_target",
+            "groupBitOr(steps_bitfield) as hc_steps_bitfield",
+            "max(step_reached) as hc_step_reached",
+            # Ties on step_reached are ordinary (two values can each carry someone to the same
+            # step), and argMax on a tie returns an unspecified row -- which would make the
+            # displayed conversion times depend on ClickHouse's choice. Order by furthest step,
+            # then fastest total time, so the pick is deterministic and defensible. Every argMax
+            # here uses this same key so they all describe the same value.
+            f"argMax(timings, {_HOLD_CONSTANT_PICK}) as hc_timings",
+            "any(prop) as hc_prop",
+        ]
+        outer_fields = [
+            "aggregation_target",
+            "hc_steps_bitfield as steps_bitfield",
+            "hc_step_reached as step_reached",
+            "hc_step_reached + 1 as steps",
+            "hc_timings as timings",
+            "hc_prop as prop",
+            f"{self._default_breakdown_selector()} as breakdown",
+        ]
+
+        if self._include_matched_events() or self.context.includePrecedingTimestamp or self.context.includeTimestamp:
+            inner_aggregates.append(f"argMax(matched_events_array, {_HOLD_CONSTANT_PICK}) as hc_matched_events_array")
+            outer_fields.append("hc_matched_events_array as matched_events_array")
+
+        if self._is_session_aggregation():
+            inner_aggregates.append("any(person_id) as hc_person_id")
+            outer_fields.append("hc_person_id as person_id")
+
+        return parse_select(
+            f"""
+            SELECT {", ".join(outer_fields)}
+            FROM (
+                SELECT {", ".join(inner_aggregates)}
+                FROM {{inner_select}}
+                GROUP BY aggregation_target
+            )
+        """,
+            {"inner_select": inner_select},
+        )
 
     def get_query(self) -> ast.SelectQuery:
         # Enforced where the bitfield SQL is emitted because not every caller goes

@@ -20,6 +20,7 @@ import { PropertyFilterBetween } from 'lib/components/PropertyFilters/components
 import { PropertyFilterDatePicker } from 'lib/components/PropertyFilters/components/PropertyFilterDatePicker'
 import { propertyValueLogic } from 'lib/components/PropertyFilters/components/propertyValueLogic'
 import { isGroupCardFilterKey, propertyFilterTypeToPropertyDefinitionType } from 'lib/components/PropertyFilters/utils'
+import { PROPERTY_VALUE_NOT_SET_LABEL, PROPERTY_VALUE_NOT_SET_SENTINEL } from 'lib/constants'
 import { dayjs } from 'lib/dayjs'
 import { IconErrorOutline } from 'lib/lemon-ui/icons'
 import { LemonInputSelect } from 'lib/lemon-ui/LemonInputSelect/LemonInputSelect'
@@ -27,6 +28,7 @@ import { formatDate } from 'lib/utils/datetime'
 import {
     isOperatorBetween,
     isOperatorDate,
+    isOperatorDateBetween,
     isOperatorFlag,
     isOperatorMulti,
     isOperatorRegex,
@@ -103,6 +105,7 @@ export function PropertyValue({
     const isMultiSelect = forceSingleSelect ? false : operator && isOperatorMulti(operator)
     const isDateTimeProperty = operator && isOperatorDate(operator)
     const isBetweenProperty = operator && isOperatorBetween(operator)
+    const isDateRangeProperty = operator && isOperatorDateBetween(operator)
     const propertyDefinitionType = propertyFilterTypeToPropertyDefinitionType(type)
     const { isRefreshing } = useValues(propertyValueLogic({ propertyKey, type: propertyDefinitionType }))
 
@@ -114,6 +117,17 @@ export function PropertyValue({
 
     const isNumericProperty = propertyKey && propertyType === PropertyType.Numeric
     const shouldRestrictToNumericInput = isNumericProperty && !isOperatorRegex(operator)
+
+    // "(not set)" (NULL) is only meaningful for a plain exact-match value list: never for
+    // icontains/regex/gt-lt/date operators (is_set/is_not_set already cover "unset" there), never
+    // for numeric properties, never for a DateTime-typed property, and never for a flag-dependency
+    // filter (evaluated by the flag matcher, not HogQL). Duration/assignee/group-key/distinct-id
+    // properties never reach the value list below, so they need no extra check here.
+    const canOfferNotSetValue =
+        (operator === PropertyOperator.Exact || operator === PropertyOperator.IsNot) &&
+        !isFlagDependencyProperty &&
+        !isNumericProperty &&
+        propertyType !== PropertyType.DateTime
 
     const isGroupKeyProperty = propertyKey === '$group_key' && groupTypeIndex != null
     const isDistinctIdProperty = propertyKey === 'distinct_id' && type === PropertyFilterType.Person
@@ -165,6 +179,9 @@ export function PropertyValue({
     )
 
     const setValue = (newValue: PropertyValueProps['value']): void => onSet(newValue)
+
+    // Half-filled [from, to] for the date-range operators, held here until both ends are picked.
+    const [pendingDateRange, setPendingDateRange] = useState<[string | null, string | null] | null>(null)
 
     // preload values if preloadValues prop is set
     useEffect(() => {
@@ -339,8 +356,14 @@ export function PropertyValue({
         )
     }
 
+    // Kept as the raw sentinel (not the "(not set)" label) when selected: this feeds the
+    // LemonInputSelect `value` prop below, which resolves display text by looking up each
+    // entry as an option *key* — see the injected not-set option in `options` further down.
     const formattedValues = (value === null || value === undefined ? [] : Array.isArray(value) ? value : [value]).map(
-        (label) => String(formatPropertyValueForDisplay(propertyKey, label, propertyDefinitionType, groupTypeIndex))
+        (label) =>
+            label === PROPERTY_VALUE_NOT_SET_SENTINEL
+                ? PROPERTY_VALUE_NOT_SET_SENTINEL
+                : String(formatPropertyValueForDisplay(propertyKey, label, propertyDefinitionType, groupTypeIndex))
     )
 
     if (!editable) {
@@ -351,7 +374,13 @@ export function PropertyValue({
             const displayValues = rawValues.map((key) => groupKeyNames[key] || key)
             return <>{displayValues.join(' or ')}</>
         }
-        return <>{formattedValues.join(' or ')}</>
+        return (
+            <>
+                {formattedValues
+                    .map((v) => (v === PROPERTY_VALUE_NOT_SET_SENTINEL ? PROPERTY_VALUE_NOT_SET_LABEL : v))
+                    .join(' or ')}
+            </>
+        )
     }
 
     if (isDurationProperty) {
@@ -360,6 +389,48 @@ export function PropertyValue({
 
     if (isBetweenProperty) {
         return <PropertyFilterBetween value={value ?? null} onSet={setValue} size={size} />
+    }
+
+    if (isDateRangeProperty) {
+        // Two date pickers rather than a third component: PropertyFilterBetween is numeric-only
+        // (it coerces both sides with `Number()`), so it can't host a [from, to] date pair.
+        //
+        // The half-filled pair is held locally and NOT pushed up, for two reasons:
+        //  - an unpicked bound would have to serialise as something, and '' reaches ClickHouse as
+        //    toDateTime(''), which is a hard query error rather than an ignored bound;
+        //  - TaxonomicPropertyFilter closes the popover as soon as a truthy value arrives for a
+        //    non-multi operator, so committing on the first pick shuts the second picker before
+        //    it can be reached.
+        // Committing only once both ends exist fixes both, and lets the popover close at the
+        // right moment -- when the range is actually complete.
+        const committed = Array.isArray(value) ? value : [null, null]
+        const [rangeFrom, rangeTo] = pendingDateRange ?? [
+            (committed[0] ?? null) as string | null,
+            (committed[1] ?? null) as string | null,
+        ]
+        const setBound = (from: string | null, to: string | null): void => {
+            setPendingDateRange([from, to])
+            if (from && to) {
+                setValue([from, to])
+            }
+        }
+        return (
+            <div className="flex items-center gap-2">
+                <PropertyFilterDatePicker
+                    autoFocus={autoFocus}
+                    operator={operator}
+                    value={rangeFrom}
+                    setValue={(newFrom) => setBound((newFrom as string) || null, rangeTo)}
+                />
+                <span className="font-medium">and</span>
+                <PropertyFilterDatePicker
+                    autoFocus={false}
+                    operator={operator}
+                    value={rangeTo}
+                    setValue={(newTo) => setBound(rangeFrom, (newTo as string) || null)}
+                />
+            </div>
+        )
     }
 
     if (isDateTimeProperty) {
@@ -512,6 +583,10 @@ export function PropertyValue({
                 title={titleNode}
                 popoverClassName="max-w-200"
                 options={[
+                    // First, so it's discoverable, rather than buried among fetched values.
+                    ...(canOfferNotSetValue
+                        ? [{ key: PROPERTY_VALUE_NOT_SET_SENTINEL, label: PROPERTY_VALUE_NOT_SET_LABEL }]
+                        : []),
                     ...displayOptions.map(({ name: _name }, index) => {
                         const name = toString(_name)
                         return {

@@ -14,6 +14,7 @@ import {
     chooseOperatorMap,
     isOperatorCohort,
     isOperatorDate,
+    isOperatorDateBetween,
     isOperatorFlag,
     isOperatorMulti,
     isOperatorRange,
@@ -365,6 +366,18 @@ export function OperatorValueSelect({
                             } else if (isOperatorRange(newOperator) && isNaN(value as any)) {
                                 // If the new operator is range and the value is not a number, we want to set the new value to null
                                 onChange(newOperator, null)
+                            } else if (isOperatorDateBetween(newOperator)) {
+                                // Switching between the two date-range operators (between <-> not
+                                // between) keeps the existing [from, to] pair, since both accept the
+                                // same shape. Switching in from anything else (a bare date string, a
+                                // numeric range, ...) can't be reinterpreted as a range, so it's dropped
+                                // rather than reaching the backend as a non-array value.
+                                onChange(
+                                    newOperator,
+                                    isOperatorDateBetween(currentOperator || PropertyOperator.Exact)
+                                        ? value ?? null
+                                        : null
+                                )
                             } else if (
                                 isOperatorDate(newOperator) &&
                                 (Array.isArray(value) || !dayjs(value as string).isValid())

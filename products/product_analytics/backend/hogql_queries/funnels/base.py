@@ -109,7 +109,9 @@ class FunnelBase(ABC):
         if not results or len(results) == 0:
             return []
 
-        if breakdown:
+        # A held-constant breakdown is a single funnel: the per-value rows were already collapsed
+        # in SQL, so there is one row and it carries no breakdown value to label it with.
+        if breakdown and not self.context.holdConstantBreakdown:
             return [self._format_single_funnel(res, with_breakdown=True) for res in results]
         else:
             return self._format_single_funnel(results[0])

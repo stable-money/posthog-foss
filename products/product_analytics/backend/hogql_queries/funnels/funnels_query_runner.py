@@ -62,6 +62,7 @@ from products.product_analytics.backend.hogql_queries.funnels.funnel_time_to_con
 from products.product_analytics.backend.hogql_queries.funnels.funnel_validation_rules import (
     RequireAtLeastTwoFunnelSteps,
     ValidateFunnelExclusions,
+    ValidateFunnelHoldConstantBreakdown,
     ValidateFunnelStepRange,
     ValidateMaxFunnelSteps,
     ValidateOptionalFunnelSteps,
@@ -106,6 +107,7 @@ class FunnelsQueryRunner(AnalyticsQueryRunner[FunnelsQueryResponse]):
             ValidateMaxFunnelSteps(),
             ValidateFunnelStepRange(),
             ValidateFunnelExclusions(),
+            ValidateFunnelHoldConstantBreakdown(),
             ValidateOptionalFunnelSteps(),
             DisallowUnsupportedDataWarehouseSettings(),
         )

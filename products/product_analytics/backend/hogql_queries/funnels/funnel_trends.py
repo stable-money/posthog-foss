@@ -87,9 +87,7 @@ class FunnelTrendsUDF(FunnelUDFMixin, FunnelBase):
         )
 
     def conversion_window_limit(self) -> int:
-        return int(
-            self.context.funnelWindowInterval * DATERANGE_MAP[self.context.funnelWindowIntervalUnit].total_seconds()
-        )
+        return self.context.conversion_window_seconds
 
     def _person_id_select(self) -> str:
         if self._is_session_aggregation():
@@ -444,12 +442,7 @@ class FunnelTrendsUDF(FunnelUDFMixin, FunnelBase):
         return {"count": count, "data": data, "days": days, "labels": labels}
 
     def _date_range(self):
-        return QueryDateRange(
-            date_range=self.context.query.dateRange,
-            team=self.context.team,
-            interval=self.context.query.interval,
-            now=self.context.now,
-        )
+        return self.context.query_date_range
 
     # The fill query returns all the start_interval dates in the response
     def _get_fill_query(self) -> ast.SelectQuery:
