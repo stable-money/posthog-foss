@@ -1,0 +1,193 @@
+/* ==========================================================================
+   Stable Money — PostHog theme
+   --------------------------------------------------------------------------
+   Every rule below sets a CSS custom property that PostHog already defines in
+   frontend/src/styles/base.scss, or targets one of the handful of stable BEM
+   class names that survive its Tailwind migration. Nothing here depends on a
+   utility class or on DOM structure, so an upstream refactor cannot silently
+   break it — the worst case is a variable stops being read and its line goes
+   inert.
+
+   PostHog scopes its theming by body[theme=light] / body[theme=dark]. Both are
+   defined here so the theme survives the light/dark toggle in either direction.
+
+   Change ONE thing to rebrand: --sm-accent.
+   ========================================================================== */
+
+:root {
+    /* Stable Money brand primary, taken verbatim from the app:
+       ColorName.primary / ColorName.primaryButton = #2C3441
+       ColorName.primaryButtonTap                  = #464B5F
+       (mobile/stable-flutter/apps/stable_money_flutter/lib/gen/colors.gen.dart)
+       Drives buttons, frames, focus rings and funnel bars. */
+    --sm-accent: #2c3441;
+    --sm-accent-hover: #464b5f;
+
+    /* PostHog ships 0.375rem. Slightly softer reads as current without
+       drifting into the pill-shaped look that dates quickly. */
+    --radius: 0.5rem;
+    --radius-sm: 0.3125rem;
+    --radius-lg: 0.75rem;
+
+    /* Upstream's heading stack leads with RoundHog — PostHog's own display face,
+       really loaded (fonts.scss:43, weight 800), so this is a real substitution
+       and not a no-op: headings move to the system UI face. RoundHog reads as
+       PostHog branding, which is wrong for an install that is ours.
+
+       This is upstream's --font-title verbatim with 'RoundHog' removed — the
+       emoji entries at both ends are load-bearing and must stay. */
+    --font-title:
+        'Emoji Flags Polyfill', -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Roboto',
+        'Helvetica Neue', helvetica, arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol';
+}
+
+/* --------------------------------------------------------------------------
+   Light
+   -------------------------------------------------------------------------- */
+body[theme='light'] {
+    /* Warm grey → near-neutral. PostHog's default #f3f2ef reads sepia on a
+       modern display, which is most of what makes the app feel dated. */
+    --color-bg-3000: #f6f7f9;
+    --color-bg-light: #ffffff;
+    --color-bg-table: #fbfcfd;
+    --glass-bg-3000: rgb(255 255 255 / 82%);
+
+    /* Higher contrast body text. The default sits around #111 on warm grey,
+       which measures fine but reads muddy. */
+    --text-3000: #0b0d12;
+    --text-3000-light: #0b0d12;
+    --muted-3000: #5b6472;
+    --color-text-tertiary: #8a93a2;
+
+    /* Borders one step lighter, so dense tables stop looking like grids. */
+    --border: rgb(11 13 18 / 9%);
+    --border-3000: rgb(11 13 18 / 12%);
+    --border-bold: rgb(11 13 18 / 24%);
+    --glass-border-3000: rgb(11 13 18 / 8%);
+
+    /* Accent colour for active nav, selected rows, focus and highlights. The
+       primary BUTTON is deliberately left alone — see the note at the bottom. */
+    --primary-3000: var(--sm-accent);
+    --primary-3000-hover: var(--sm-accent-hover);
+    --primary-3000-light: var(--sm-accent);
+    --primary-alt-highlight: rgb(44 52 65 / 8%);
+
+    /* Links carry the brand colour too, which is near-black — so they lean on
+       underline and hover rather than hue to read as links. If they turn out to
+       be hard to spot in prose, this is the one line to change; nothing else
+       depends on it. */
+    --link: var(--sm-accent);
+    --color-accent-3000: #eef1f6;
+
+    /* Series colours. Upstream's slot 1 is #1d4aff — the single most dated thing
+       on a funnel screen — and slots 2-15 are an unordered grab bag rather than a
+       palette. These eight are a validated categorical set: every adjacent pair
+       clears the colour-blind separation gate (worst 9.1 protan) and the
+       normal-vision floor (worst 19.6) on a #ffffff card.
+
+       Three of them sit under 3:1 against white (#1baf7a 2.82, #eda100 2.17,
+       #e87ba4 2.69). That is allowed only because PostHog always ships the
+       relief: funnel steps carry direct labels and every insight has a
+       "Detailed results" table, so colour is never the only channel.
+
+       Slots 9-15 are deliberately left upstream: PostHog only reaches them past
+       eight series, and a ninth series should be folded into "Other" rather than
+       given a ninth hue. */
+    --data-color-1: #2a78d6;
+    --data-color-1-hover: #256abf;
+    --data-color-2: #eb6834;
+    --data-color-3: #1baf7a;
+    --data-color-4: #eda100;
+    --data-color-5: #e87ba4;
+    --data-color-6: #008300;
+    --data-color-7: #4a3aa7;
+    --data-color-8: #e34948;
+}
+
+/* --------------------------------------------------------------------------
+   Dark
+   -------------------------------------------------------------------------- */
+body[theme='dark'] {
+    --color-bg-3000: #0e1014;
+    --color-bg-light: #16191f;
+    --color-bg-table: #14171c;
+    --glass-bg-3000: rgb(14 16 20 / 82%);
+
+    --text-3000: #e9edf4;
+    --text-3000-dark: #e9edf4;
+    --muted-3000: #98a2b3;
+    --color-text-tertiary: #6b7482;
+
+    --border: rgb(233 237 244 / 11%);
+    --border-3000: rgb(233 237 244 / 14%);
+    --border-bold: rgb(233 237 244 / 26%);
+    --glass-border-3000: rgb(233 237 244 / 10%);
+
+    /* The app's own dark primary is #FFFFFF (ColorName.darkPrimary), which is
+       unusable as an accent on a near-black ground. So this is DERIVED, not
+       brand-verbatim: #2C3441 is hsl(217 19% 21%); held at that hue, saturation
+       nudged to 30% and lightness raised to 68% for AA contrast.
+       As in light, the primary BUTTON is left to upstream. */
+    --primary-3000: #95a8c6;
+    --primary-3000-hover: #adbcd4;
+    --primary-3000-dark: #95a8c6;
+    --primary-alt-highlight: rgb(149 168 198 / 14%);
+
+    --link: #adbcd4;
+    --color-accent-3000: #1b1f27;
+
+    /* The same eight hues, re-stepped for a #16191f card — not an automatic
+       flip of the light values. Validated as its own set: worst adjacent CVD
+       ΔE 8.4, normal-vision 19.3, and unlike light, all eight clear 3:1. */
+    --data-color-1: #3987e5;
+    --data-color-1-hover: #2a78d6;
+    --data-color-2: #d95926;
+    --data-color-3: #199e70;
+    --data-color-4: #c98500;
+    --data-color-5: #d55181;
+    --data-color-6: #008300;
+    --data-color-7: #9085e9;
+    --data-color-8: #e66767;
+}
+
+/* ==========================================================================
+   The one structural rule worth the risk. It targets a class name that
+   predates the Tailwind migration and is still authored by hand in
+   FunnelBarVertical.scss, so it is as stable as anything in this codebase.
+   ========================================================================== */
+
+/* Funnel percentage gridlines sit at 20% intervals in near-invisible grey.
+   They are the only thing telling you the bars are scaled relative to the
+   previous step rather than to step 1 — worth being able to see. */
+.StepBarLabels__label {
+    color: var(--muted-3000);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Density — opt in deliberately.
+   --------------------------------------------------------------------------
+   --spacing is Tailwind 4's base unit; every p-*, gap-* and m-* in the app is
+   a multiple of it. Dropping it to 0.22rem removes roughly 12% of the vertical
+   whitespace app-wide, which is the single biggest lever on "the numbers are
+   below the fold". It is also the single most likely thing to make some screen
+   somewhere look cramped, because it moves every layout at once.
+
+   Uncomment, look at the funnel and a dashboard, and keep it only if you like
+   what it does to both.
+   ========================================================================== */
+
+/*
+:root {
+    --spacing: 0.22rem;
+}
+*/
+
+/* Figures in a table are meant to be compared down the column, which needs the
+   digits to share a width. LemonTable is hand-authored (LemonTable.scss:11), so
+   the class is as stable as .StepBarLabels__label above. Applied to cells only —
+   headers are words, and tabular figures in prose look mechanical. */
+.LemonTable td {
+    font-variant-numeric: tabular-nums;
+}
