@@ -2815,6 +2815,11 @@ class FunnelVizType(StrEnum):
     FLOW = "flow"
 
 
+class FunnelWindowBoundary(StrEnum):
+    CLIP = "clip"
+    EXTEND = "extend"
+
+
 class Position(StrEnum):
     START = "start"
     END = "end"
@@ -3815,6 +3820,8 @@ class PropertyOperator(StrEnum):
     IS_DATE_EXACT = "is_date_exact"
     IS_DATE_BEFORE = "is_date_before"
     IS_DATE_AFTER = "is_date_after"
+    IS_DATE_BETWEEN = "is_date_between"
+    IS_DATE_NOT_BETWEEN = "is_date_not_between"
     BETWEEN = "between"
     NOT_BETWEEN = "not_between"
     MIN = "min"
