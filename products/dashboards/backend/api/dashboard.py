@@ -37,6 +37,7 @@ from django.utils.timezone import now
 
 import structlog
 import posthoganalytics
+from asgiref.sync import async_to_sync
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_field, extend_schema_view
 from opentelemetry import trace
@@ -46,8 +47,6 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
 from rest_framework.utils.serializer_helpers import ReturnDict
-
-from posthog.schema import InsightVizNode
 
 from posthog.api.forbid_destroy_model import ForbidDestroyModel
 from posthog.api.monitoring import Feature, monitor
@@ -169,8 +168,6 @@ from products.product_analytics.backend.presentation.insight import (
     InsightViewSet,
     get_insight_type,
 )
-
-from ee.hogai.utils.aio import async_to_sync
 
 
 def _normalize_dashboard_customization(customization: Any) -> dict[str, Any]:
@@ -3552,22 +3549,8 @@ class DashboardsViewSet(
         return tile
 
     def _format_insight_for_llm(self, insight: Insight, insight_data: dict) -> str | None:
-        if not settings.EE_AVAILABLE:
-            return None
-        try:
-            from ee.hogai.context.insight.format import format_query_results_for_llm
-
-            query_dict = insight.query
-            if not query_dict:
-                return None
-            query = InsightVizNode.model_validate(query_dict)
-            if not query.source:
-                return None
-            result_dict = {"results": insight_data.get("result"), "columns": insight_data.get("columns")}
-            return format_query_results_for_llm(query.source, result_dict, self.team)
-        except Exception:
-            logger.warning("dashboard_run_insights_format_failed", exc_info=True, insight_id=insight.id)
-            return None
+        # LLM-friendly formatting of query results is not available in this build.
+        return None
 
     @action(
         methods=["POST"],

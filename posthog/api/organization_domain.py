@@ -1,8 +1,6 @@
 import re
 from typing import Any, cast
 
-from django.db.models import Q
-
 import posthoganalytics
 from drf_spectacular.utils import extend_schema
 from rest_framework import exceptions, request, response, serializers
@@ -10,22 +8,13 @@ from rest_framework.request import Request
 from rest_framework.viewsets import ModelViewSet
 
 from posthog.api.routing import TeamAndOrgViewSetMixin
-from posthog.api.scim_request_log import (
-    PaginatedSCIMRequestLogSerializer,
-    SCIMRequestLogQuerySerializer,
-    paginated_scim_request_logs_response,
-)
 from posthog.api.utils import action
 from posthog.cloud_utils import is_cloud
 from posthog.constants import AvailableFeature
 from posthog.event_usage import groups
 from posthog.models import OrganizationDomain, User
-from posthog.models.identity_provider_config import ConfigScope
-from posthog.models.organization import Organization, OrganizationMembership
+from posthog.models.organization import Organization
 from posthog.permissions import OrganizationAdminWritePermissions, TimeSensitiveActionPermission
-
-from ee.api.scim.utils import get_scim_base_url
-from ee.models.scim_request_log import SCIMRequestLog
 
 DOMAIN_REGEX = r"^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$"
 
@@ -56,10 +45,6 @@ class OrganizationDomainSerializer(serializers.ModelSerializer):
         "sso_enforcement": "sso_enforcement",
     }
 
-    scim_base_url = (
-        serializers.SerializerMethodField()
-    )  # TODO: remove this from the org domain api and have the frontend use the idp config api to get the scim base url
-
     class Meta:
         model = OrganizationDomain
         fields = (
@@ -70,13 +55,11 @@ class OrganizationDomainSerializer(serializers.ModelSerializer):
             "verification_challenge",
             "jit_provisioning_enabled",
             "sso_enforcement",
-            "scim_base_url",
         )
         extra_kwargs = {
             "verified_at": {"read_only": True},
             "verification_challenge": {"read_only": True},
             "is_verified": {"read_only": True},
-            "scim_base_url": {"read_only": True},
         }
 
     def get_fields(self):
@@ -126,12 +109,6 @@ class OrganizationDomainSerializer(serializers.ModelSerializer):
     def update(self, instance: OrganizationDomain, validated_data: dict[str, Any]) -> OrganizationDomain:
         validated_data.pop("domain", None)  # domain is immutable after creation
         return super().update(instance, validated_data)
-
-    def get_scim_base_url(self, obj: OrganizationDomain) -> str | None:
-        configs = list(obj.identity_provider_configs_for_scope(ConfigScope.SCIM).filter(scim_enabled=True)[:2])
-        if len(configs) != 1 or not configs[0].has_scim or not configs[0].scim_slug:
-            return None
-        return get_scim_base_url(configs[0])
 
 
 @extend_schema(extensions={"x-product": "core"})
@@ -223,21 +200,3 @@ class OrganizationDomainViewset(TeamAndOrgViewSetMixin, ModelViewSet):
 
         instance.delete()
         return response.Response(status=204)
-
-    @extend_schema(parameters=[SCIMRequestLogQuerySerializer], responses=PaginatedSCIMRequestLogSerializer)
-    @action(methods=["GET"], detail=True, url_path="scim/logs")
-    def scim_logs(self, request: Request, **kwargs) -> response.Response:
-        membership = OrganizationMembership.objects.filter(
-            user=cast("User", request.user), organization=self.organization
-        ).first()
-        if not membership or membership.level < OrganizationMembership.Level.ADMIN:
-            raise exceptions.PermissionDenied("Only organization admins can view SCIM logs.")
-
-        domain: OrganizationDomain = self.get_object()
-        # SCIM authenticates against the linked IdP config, so its requests are logged against the
-        # config. Match the domain too: rows logged before the move carry only that until the
-        # `backfill_scim_request_log_config` command reaches them, and a domain that was later
-        # unlinked from its config keeps nothing else to find its history by.
-        scope = Q(organization_domain=domain) | Q(identity_provider_config__in=domain.identity_provider_configs)
-        queryset = SCIMRequestLog.objects.filter(scope)
-        return paginated_scim_request_logs_response(request, queryset)

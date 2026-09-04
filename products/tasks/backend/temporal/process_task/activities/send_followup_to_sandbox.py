@@ -60,9 +60,12 @@ from products.tasks.backend.temporal.process_task.utils import (
     upgrade_run_to_user_authorship,
 )
 
-from ee.hogai.sandbox import STOP_REASON_END_TURN, TURN_COMPLETE_METHOD
-
 logger = structlog.get_logger(__name__)
+
+# Wire-protocol constants for the sandbox event stream (see relay_sandbox_events.py's sibling
+# "_posthog/error" notification method).
+STOP_REASON_END_TURN = "end_turn"
+TURN_COMPLETE_METHOD = "_posthog/turn_complete"
 
 
 class SandboxRebindFailure(StrEnum):

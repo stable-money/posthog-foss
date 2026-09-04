@@ -6,15 +6,11 @@ from urllib.parse import urlencode
 import nh3
 import structlog
 from markdown_it import MarkdownIt
-from markdown_to_mrkdwn import SlackMarkdownConverter
-from slack_sdk.errors import SlackApiError
 
 from posthog.email import EmailMessage, raise_if_delivery_rejected
 from posthog.exceptions_capture import capture_exception
 from posthog.helpers.markdown_safety import strip_external_links_markdown
-from posthog.helpers.slack_subscription_explore import build_explore_hint
 from posthog.models import Team, User
-from posthog.models.integration import Integration
 from posthog.sync import database_sync_to_async
 from posthog.utils import absolute_uri
 
@@ -31,27 +27,13 @@ from products.exports.backend.temporal.subscriptions.ai_subscription.spec_genera
 )
 from products.exports.backend.temporal.subscriptions.types import AI_REPORT_WINDOW_END_KEY, SubscriptionTriggerType
 
-from ee.tasks.subscriptions.slack_subscriptions import (
-    UTM_TAGS_BASE,
-    SlackDeliveryResult,
-    SlackMessage,
-    deliver_slack_message_data,
-)
-from ee.tasks.subscriptions.teams_subscriptions import (
-    TEAMS_CARD_TEXT_BUDGET,
-    TEAMS_UTM_TAGS,
-    fit_to_teams_budget,
-    teams_byte_size,
-    teams_card_message,
-    teams_open_url_action,
-    teams_text_block,
-)
-
 logger = structlog.get_logger(__name__)
+
+# Shared base for delivery-channel UTM tracking params; each channel appends its own utm_medium.
+UTM_TAGS_BASE = "utm_source=posthog&utm_campaign=ai_subscription_report"
 
 
 _MARKDOWN_RENDERER = MarkdownIt("commonmark", {"breaks": True, "html": False}).enable("table")
-_SLACK_CONVERTER = SlackMarkdownConverter()
 
 # defense-in-depth on top of html=False: allow only the tags commonmark emits
 _ALLOWED_EMAIL_TAGS = {
@@ -83,41 +65,6 @@ _ALLOWED_EMAIL_TAGS = {
     "td",
 }
 _ALLOWED_EMAIL_ATTRS = {"a": {"href", "title"}}
-
-# Slack's hard limit is 3000 chars per section block; keep margin for safety.
-SLACK_MRKDWN_SECTION_LIMIT = 2900
-SLACK_IMAGE_TITLE_LIMIT = 2000
-
-TEAMS_TEXT_BLOCK_LIMIT = 3000
-# Upper bound on report blocks. It only stops the chunker from splitting an unbounded report into
-# thousands of pieces; TEAMS_CARD_TEXT_BUDGET is what keeps the payload inside what Teams accepts.
-TEAMS_REPORT_BLOCK_COUNT = 10
-# Chunking is quadratic in the number of chunks and nothing upstream bounds a report's length, so
-# the markdown is cut to what could fill the blocks above before it is chunked at all.
-_TEAMS_REPORT_CHUNKING_LIMIT = TEAMS_REPORT_BLOCK_COUNT * TEAMS_TEXT_BLOCK_LIMIT
-
-
-def _split_text_into_chunks(text: str, limit: int = SLACK_MRKDWN_SECTION_LIMIT) -> list[str]:
-    if len(text) <= limit:
-        return [text] if text else []
-
-    chunks: list[str] = []
-    remaining = text
-    while len(remaining) > limit:
-        # prefer a paragraph break, then any newline, else a hard cut; cut <= 0 guards against
-        # carving an empty leading chunk and never progressing
-        cut = remaining.rfind("\n\n", 0, limit)
-        if cut <= 0:
-            cut = remaining.rfind("\n", 0, limit)
-        if cut <= 0:
-            cut = limit
-        chunk = remaining[:cut].rstrip()
-        if chunk:
-            chunks.append(chunk)
-        remaining = remaining[cut:].lstrip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks
 
 
 def _last_scheduled_report_cutoff(subscription: Subscription) -> datetime | None:
@@ -333,167 +280,9 @@ def send_email_ai_subscription_credit_limited(
     message.send(send_async=False)
 
 
-def _build_ai_slack_message(
-    subscription: Subscription,
-    markdown: str,
-    *,
-    delivery_id: uuid.UUID,
-    integration: Integration | None = None,
-    charts: list[dict] | None = None,
-) -> SlackMessage:
-    utm_tags = f"{UTM_TAGS_BASE}&utm_medium=slack"
-    channel = subscription.target_value.split("|")[0]
-    sections = _split_text_into_chunks(_SLACK_CONVERTER.convert(strip_external_links_markdown(markdown)))
-    title = subscription.title or "Your PostHog AI report"
-    first_section = sections[0] if sections else "_No report content was generated._"
-
-    blocks: list[dict] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": first_section}},
-    ]
-    for chart in charts or []:
-        caption = chart.get("title") or "Chart"
-        image_block: dict = {
-            "type": "image",
-            "image_url": chart["image_url"],
-            "alt_text": caption[:SLACK_IMAGE_TITLE_LIMIT],
-        }
-        if chart.get("title"):
-            image_block["title"] = {"type": "plain_text", "text": caption[:SLACK_IMAGE_TITLE_LIMIT]}
-        blocks.append(image_block)
-    if len(sections) > 1:
-        blocks.append(
-            {"type": "section", "text": {"type": "mrkdwn", "text": "_See thread for the rest of the report._"}}
-        )
-
-    subscription_url = subscription.url or absolute_uri(
-        f"/project/{subscription.team_id}/subscriptions/{subscription.id}"
-    )
-    feedback_positive_url = _build_feedback_url(subscription_url, delivery_id, "positive", "slack")
-    feedback_negative_url = _build_feedback_url(subscription_url, delivery_id, "negative", "slack")
-
-    action_elements: list[dict] = [
-        {
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Manage subscription"},
-            "url": f"{subscription_url}?{utm_tags}",
-        }
-    ]
-    blocks.extend(
-        [
-            {"type": "divider"},
-            {"type": "actions", "elements": action_elements},
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": (
-                            "Was this report useful? "
-                            f"<{feedback_positive_url}|👍 Yes> · <{feedback_negative_url}|👎 No>"
-                        ),
-                    }
-                ],
-            },
-        ]
-    )
-    # AI consent is enforced upstream before this report is built, so the hint always shows here.
-    if explore_hint := build_explore_hint(integration, utm_tags=utm_tags, ai_enabled=True):
-        blocks.append(explore_hint)
-
-    thread_messages = [
-        {"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": section}}]} for section in sections[1:]
-    ]
-    # unfurl=False: report content is LLM-generated; never let Slack auto-fetch a link it contains.
-    return SlackMessage(channel=channel, blocks=blocks, title=title, thread_messages=thread_messages, unfurl=False)
-
-
-async def send_slack_ai_subscription_report(
-    *,
-    subscription: Subscription,
-    markdown: str,
-    integration: Integration,
-    delivery_id: uuid.UUID,
-    charts: list[dict] | None = None,
-) -> SlackDeliveryResult:
-    def build(with_charts: list[dict] | None) -> SlackMessage:
-        return _build_ai_slack_message(
-            subscription, markdown, delivery_id=delivery_id, integration=integration, charts=with_charts
-        )
-
-    try:
-        return await deliver_slack_message_data(integration, subscription, build(charts))
-    except SlackApiError as exc:
-        if not charts or exc.response.get("error") != "invalid_blocks":
-            raise
-        logger.warning(
-            "ai_report.slack_charts_rejected_resending_without_them",
-            subscription_id=subscription.id,
-            chart_count=len(charts),
-        )
-        return await deliver_slack_message_data(integration, subscription, build(None))
-
-
-def build_ai_teams_card(subscription: Subscription, markdown: str, *, delivery_id: uuid.UUID) -> dict[str, Any]:
-    """Adaptive Card for an AI report. Adaptive Cards render a restricted markdown subset in a
-    TextBlock, so the report goes through mostly as written and a table degrades to plain text."""
-    title = strip_external_links_markdown(subscription.title or "Your PostHog AI report")
-    subscription_url = subscription.url or absolute_uri(
-        f"/project/{subscription.team_id}/subscriptions/{subscription.id}"
-    )
-
-    report = strip_external_links_markdown(markdown)
-    sections = _split_text_into_chunks(report[:_TEAMS_REPORT_CHUNKING_LIMIT], TEAMS_TEXT_BLOCK_LIMIT)
-
-    heading = f"**{title}**"
-    shortened_notice = (
-        f"This report was shortened to fit. [Read all of it in PostHog]({subscription_url}?{TEAMS_UTM_TAGS})"
-    )
-    feedback_positive_url = _build_feedback_url(subscription_url, delivery_id, "positive", "teams")
-    feedback_negative_url = _build_feedback_url(subscription_url, delivery_id, "negative", "teams")
-    feedback = f"Was this report useful? [👍 Yes]({feedback_positive_url}) · [👎 No]({feedback_negative_url})"
-
-    # Chunking is by character and Teams measures the payload in UTF-8 bytes, so CJK or emoji text
-    # is several times the size the chunker accounted for. The report gets whatever the fixed blocks
-    # around it leave, which is what keeps such a report from being rejected on every scheduled run.
-    remaining = (
-        TEAMS_CARD_TEXT_BUDGET
-        - teams_byte_size(heading)
-        - teams_byte_size(shortened_notice)
-        - teams_byte_size(feedback)
-    )
-
-    kept: list[str] = []
-    over_budget = False
-    for section in sections[:TEAMS_REPORT_BLOCK_COUNT]:
-        size = teams_byte_size(section)
-        if size > remaining:
-            fitted = fit_to_teams_budget(section, remaining)
-            if teams_byte_size(fitted) <= remaining:
-                kept.append(fitted)
-            over_budget = True
-            break
-        kept.append(section)
-        remaining -= size
-
-    body: list[dict[str, Any]] = [teams_text_block(heading)]
-    if kept:
-        body.extend(teams_text_block(section) for section in kept)
-    else:
-        body.append(teams_text_block("_No report content was generated._"))
-    if over_budget or len(kept) < len(sections) or len(report) > _TEAMS_REPORT_CHUNKING_LIMIT:
-        body.append(teams_text_block(shortened_notice, is_subtle=True))
-    body.append(teams_text_block(feedback, is_subtle=True))
-
-    actions = [teams_open_url_action("Manage subscription", f"{subscription_url}?{TEAMS_UTM_TAGS}")]
-    return teams_card_message(body, actions)
-
-
 __all__ = [
     "build_ai_subscription_report",
-    "build_ai_teams_card",
     "build_chart_image_urls",
     "render_ai_email_html",
     "send_email_ai_subscription_report",
-    "send_slack_ai_subscription_report",
 ]

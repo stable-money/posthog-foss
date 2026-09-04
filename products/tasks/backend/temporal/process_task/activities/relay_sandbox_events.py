@@ -40,8 +40,6 @@ from products.tasks.backend.temporal.process_task.utils import (
     is_slack_interaction_state,
 )
 
-from ee.hogai.sandbox import is_turn_complete
-
 logger = structlog.get_logger(__name__)
 
 HEARTBEAT_INTERVAL_SECONDS = 30
@@ -845,7 +843,9 @@ def _is_end_of_turn(event_data: dict) -> bool:
     pi_event = _pi_conversation_event(event_data)
     if pi_event is not None:
         return pi_event.get("type") == "turn_completed"
-    return is_turn_complete(event_data)
+    if event_data.get("type") != "notification":
+        return False
+    return event_data.get("notification", {}).get("method") == "_posthog/turn_complete"
 
 
 async def _emit_agentsh_events(sandbox_id: str, run_id: str, last_ts_ns: list[int]) -> None:

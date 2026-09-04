@@ -14,8 +14,6 @@ from temporalio import activity
 from posthog.event_usage import groups
 from posthog.temporal.common.metrics import get_metric_meter
 
-from ee.billing.quota_limiting import QuotaLimitingCaches, QuotaResource, is_team_limited
-
 if TYPE_CHECKING:
     from posthog.models import Team
 
@@ -43,18 +41,13 @@ def record_quota_check_failed_open() -> None:
 def is_team_signals_quota_limited(team_api_token: str) -> bool:
     """Whether a team is currently over its Signals credits quota.
 
-    Fails open on a quota-limiter read error so an infra blip lets work through rather than stalling.
-    Records `signals_quota_check_failed_open_total` so the bypass is alertable.
-    Synchronous (Redis read); wrap in `sync_to_async` when calling from async code.
+    The billing quota limiter isn't available in this build, so this always fails open (not
+    limited) — the same policy already applied here for a quota-limiter read error. Records
+    `signals_quota_check_failed_open_total` so the bypass is alertable.
     """
-    try:
-        return is_team_limited(
-            team_api_token, QuotaResource.SIGNALS_CREDITS, QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY
-        )
-    except Exception:
-        logger.warning("signals_quota_check_failed_open", exc_info=True)
-        record_quota_check_failed_open()
-        return False
+    logger.warning("signals_quota_check_failed_open", reason="quota_limiter_unavailable")
+    record_quota_check_failed_open()
+    return False
 
 
 @dataclass(frozen=True)

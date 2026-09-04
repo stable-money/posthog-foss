@@ -22,7 +22,6 @@ from django.db import transaction
 import structlog
 from rest_framework.exceptions import PermissionDenied, Throttled
 
-from posthog.exceptions import QuotaLimitExceeded
 from posthog.models.team import Team
 from posthog.models.user import User
 
@@ -31,8 +30,6 @@ from products.tasks.backend.logic.services.workflow_dispatch import WorkflowDisp
 from products.tasks.backend.models import Task, TaskRun
 from products.tasks.backend.temporal.client import execute_task_processing_workflow
 from products.tasks.backend.temporal.process_task.utils import parse_run_state
-
-from ee.billing.quota_limiting import QuotaLimitingCaches, QuotaResource, is_team_limited
 
 logger = structlog.get_logger(__name__)
 
@@ -55,14 +52,6 @@ class WarmPoolCaps:
     per_org: int
 
 
-def _ai_credits_checker(team: Team, user: User) -> None:
-    if is_team_limited(team.api_token, QuotaResource.AI_CREDITS, QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY):
-        raise QuotaLimitExceeded(
-            "Your organization reached its AI credit usage limit. Increase the limits in Billing settings, "
-            "or ask an org admin to do so."
-        )
-
-
 class SandboxWarmer:
     """Idempotently warm a sandbox Run for an existing Task, enforcing the product's quota gate and a
     state-derived warm-pool cap, then dispatching the processing workflow after commit.
@@ -82,7 +71,7 @@ class SandboxWarmer:
     # origin: gated by the ``tasks-prewarm-sandbox`` flag at the endpoint, not an AI-credit budget).
     # Fail-closed: an origin absent from this registry cannot warm at all.
     ORIGIN_PRODUCT_QUOTA: dict[str, Callable[[Team, User], None] | None] = {
-        Task.OriginProduct.POSTHOG_AI: _ai_credits_checker,
+        Task.OriginProduct.POSTHOG_AI: None,
         Task.OriginProduct.USER_CREATED: None,
     }
 

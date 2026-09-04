@@ -24,9 +24,6 @@ from products.ai_observability.backend.summarization.llm import summarize
 from products.ai_observability.backend.summarization.llm.schema import SummarizationResponse
 from products.ai_observability.backend.summarization.models import OpenAIModel, SummarizationMode
 
-from ee.hogai.llm_traces_summaries.constants import LLM_TRACES_SUMMARIES_DOCUMENT_TYPE, LLM_TRACES_SUMMARIES_PRODUCT
-from ee.hogai.llm_traces_summaries.tools.embed_summaries import LLMTracesSummarizerEmbedder
-
 logger = structlog.get_logger(__name__)
 
 
@@ -110,83 +107,6 @@ def _save_generation_summary_event(
     )
 
 
-def _embedding_metadata(batch_run_id: str, job_id: str) -> dict[str, str]:
-    """Ids carried in the embedding's `metadata` JSON so `rendering` can stay a fixed enum.
-
-    `batch_run_id` pairs the embedding to its summary event ($ai_batch_run_id); `job_id`
-    scopes a clustering read to one ClusteringJob (read back via JSONExtractString).
-    """
-    return {
-        constants.EMBEDDING_METADATA_BATCH_RUN_ID_KEY: batch_run_id,
-        constants.EMBEDDING_METADATA_JOB_ID_KEY: job_id,
-    }
-
-
-def _embedding_document_id(item_id: str, job_id: str) -> str:
-    """Scope the embedding's `document_id` per (item, job) so overlapping jobs don't collapse on
-    the document_embeddings ReplacingMergeTree key — see EMBEDDING_DOCUMENT_ID_JOB_DELIMITER.
-    """
-    return f"{item_id}{constants.EMBEDDING_DOCUMENT_ID_JOB_DELIMITER}{job_id}"
-
-
-def _embed_trace_summary(
-    summary_result: SummarizationResponse,
-    trace_id: str,
-    mode: str,
-    batch_run_id: str,
-    job_id: str,
-    team: Team,
-) -> None:
-    summary_text = _format_summary_for_embedding(summary_result)
-    document_type_with_mode = f"{LLM_TRACES_SUMMARIES_DOCUMENT_TYPE}-{mode}"
-
-    embedder = LLMTracesSummarizerEmbedder(team=team)
-    embedder.embed_document(
-        content=summary_text,
-        document_id=_embedding_document_id(trace_id, job_id),
-        document_type=document_type_with_mode,
-        rendering=mode,
-        product=LLM_TRACES_SUMMARIES_PRODUCT,
-        metadata=_embedding_metadata(batch_run_id, job_id),
-    )
-
-
-def _embed_generation_summary(
-    summary_result: SummarizationResponse,
-    generation_id: str,
-    mode: str,
-    batch_run_id: str,
-    job_id: str,
-    team: Team,
-) -> None:
-    summary_text = _format_summary_for_embedding(summary_result)
-
-    embedder = LLMTracesSummarizerEmbedder(team=team)
-    embedder.embed_document(
-        content=summary_text,
-        document_id=_embedding_document_id(generation_id, job_id),
-        document_type=constants.GENERATION_DOCUMENT_TYPE,
-        rendering=mode,
-        product="llm-analytics",
-        metadata=_embedding_metadata(batch_run_id, job_id),
-    )
-
-
-def _format_summary_for_embedding(summary_result: SummarizationResponse) -> str:
-    parts = []
-    if summary_result.title:
-        parts.append(f"Title: {summary_result.title}")
-    if summary_result.flow_diagram:
-        parts.append(f"\nFlow:\n{summary_result.flow_diagram}")
-    if summary_result.summary_bullets:
-        bullets_text = "\n".join(f"- {b.text}" for b in summary_result.summary_bullets)
-        parts.append(f"\nSummary:\n{bullets_text}")
-    if summary_result.interesting_notes:
-        notes_text = "\n".join(f"- {n.text}" for n in summary_result.interesting_notes)
-        parts.append(f"\nInteresting Notes:\n{notes_text}")
-    return "\n".join(parts)
-
-
 @temporalio.activity.defn
 async def summarize_and_save_activity(input: SummarizeAndSaveInput) -> SummarizationActivityResult:
     """Read text_repr from Redis, call LLM, save event, embed, and clean up."""
@@ -251,27 +171,7 @@ async def summarize_and_save_activity(input: SummarizeAndSaveInput) -> Summariza
             await database_sync_to_async(_save_trace_summary_event, thread_sensitive=False)(save_ctx, input.event_count)
         save_duration_s = time.monotonic() - t0
 
-        # Step 4: Request embedding
-        embedding_requested = False
-        embedding_request_error = None
-        t0 = time.monotonic()
-        try:
-            if is_generation:
-                assert input.generation_id is not None
-                await database_sync_to_async(_embed_generation_summary, thread_sensitive=False)(
-                    summary_result, input.generation_id, input.mode, input.batch_run_id, input.job_id, team
-                )
-            else:
-                await database_sync_to_async(_embed_trace_summary, thread_sensitive=False)(
-                    summary_result, input.trace_id, input.mode, input.batch_run_id, input.job_id, team
-                )
-            embedding_requested = True
-        except Exception as e:
-            embedding_request_error = str(e)
-            log.exception("Failed to request embedding", error=embedding_request_error)
-        embed_duration_s = time.monotonic() - t0
-
-        # Step 5: Clean up Redis key
+        # Step 4: Clean up Redis key
         await delete_text_repr(redis_client, input.redis_key)
 
         total_duration_s = time.monotonic() - activity_start
@@ -280,9 +180,7 @@ async def summarize_and_save_activity(input: SummarizeAndSaveInput) -> Summariza
             total_duration_s=round(total_duration_s, 2),
             llm_duration_s=round(llm_duration_s, 2),
             save_duration_s=round(save_duration_s, 2),
-            embed_duration_s=round(embed_duration_s, 2),
             text_repr_length=len(text_repr),
-            embedding_requested=embedding_requested,
         )
 
     return SummarizationActivityResult(
@@ -291,6 +189,4 @@ async def summarize_and_save_activity(input: SummarizeAndSaveInput) -> Summariza
         generation_id=input.generation_id,
         text_repr_length=len(text_repr),
         event_count=input.event_count,
-        embedding_requested=embedding_requested,
-        embedding_request_error=embedding_request_error,
     )

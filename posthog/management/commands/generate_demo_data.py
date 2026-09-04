@@ -13,7 +13,6 @@ from django.core import exceptions
 from django.core.management.base import BaseCommand, CommandError
 from django.db.utils import OperationalError
 
-from posthog.api.person import PERSON_DEFAULT_DISPLAY_NAME_PROPERTIES
 from posthog.health import get_pending_postgres_migrations
 from posthog.management.commands.sync_feature_flags_from_api import sync_feature_flags_from_api
 from posthog.models import User
@@ -21,7 +20,6 @@ from posthog.models.file_system.user_product_list import UserProductList
 from posthog.models.team.setup_tasks import SetupTaskId
 from posthog.models.team.team import Team
 from posthog.products import Products
-from posthog.taxonomy.taxonomy import PERSON_PROPERTIES_ADAPTED_FROM_EVENT
 
 from products.demo.backend.facade.api import (
     HedgeboxMatrix,
@@ -31,8 +29,6 @@ from products.demo.backend.facade.api import (
     get_group_type_mapping_count,
     seed_dev_dashboard_templates,
 )
-
-from ee.clickhouse.materialized_columns.analyze import materialize_properties_task
 
 logging.getLogger("kafka").setLevel(logging.ERROR)  # Hide kafka-python's logspam
 
@@ -104,12 +100,6 @@ class Command(BaseCommand):
             action="store_true",
             default=True,
             help="Whether the demo user should be a staff user (default: True)",
-        )
-        parser.add_argument(
-            "--skip-materialization",
-            action="store_true",
-            default=False,
-            help="Skip materializing common columns after data generation",
         )
         parser.add_argument(
             "--skip-flag-sync",
@@ -220,12 +210,6 @@ class Command(BaseCommand):
             except exceptions.ValidationError as e:
                 print(f"Error: {e}")
 
-            if not options.get("skip_materialization"):
-                print("Materializing common columns...")
-                self.materialize_common_columns(options["days_past"])
-            else:
-                print("Skipping materialization of common columns.")
-
             if not options.get("skip_flag_sync"):
                 print("Syncing feature flags from API...")
                 try:
@@ -322,73 +306,6 @@ class Command(BaseCommand):
             f"for a total of {total_event_count} event{'' if total_event_count == 1 else 's'} (of which {future_event_count} {'is' if future_event_count == 1 else 'are'} in the future)."
         )
         print("\n".join(summary_lines))
-
-    def materialize_common_columns(self, backfill_days: int) -> None:
-        event_properties = {
-            *PERSON_PROPERTIES_ADAPTED_FROM_EVENT,
-            "$prev_pageview_pathname",
-            "$prev_pageview_max_content_percentage",
-            "$prev_pageview_max_scroll_percentage",
-            "$screen_name",
-            "$lib",
-            "$lib_version",
-            "$geoip_country_code",
-            "$geoip_subdivision_1_code",
-            "$geoip_subdivision_1_name",
-            "$geoip_city_name",
-            "$browser_language",
-            "$timezone_offset",
-            "$host",
-            "$exception_issue_id",
-            "$exception_types",
-            "$exception_values",
-            "$exception_sources",
-            "$exception_functions",
-            "$exception_fingerprint",
-        }
-
-        person_properties = {
-            *PERSON_PROPERTIES_ADAPTED_FROM_EVENT,
-            *PERSON_DEFAULT_DISPLAY_NAME_PROPERTIES,
-        }
-        for prop in person_properties.copy():
-            if prop.startswith("$initial_"):
-                continue
-            person_properties.add("$initial_" + (prop[1:] if prop[0] == "$" else prop))
-
-        materialize_properties_task(
-            properties_to_materialize=[
-                (
-                    "events",
-                    "properties",
-                    prop,
-                )
-                for prop in sorted(event_properties)
-            ],
-            backfill_period_days=backfill_days,
-        )
-        materialize_properties_task(
-            properties_to_materialize=[
-                (
-                    "events",
-                    "person_properties",
-                    prop,
-                )
-                for prop in sorted(person_properties)
-            ],
-            backfill_period_days=backfill_days,
-        )
-        materialize_properties_task(
-            properties_to_materialize=[
-                (
-                    "person",
-                    "properties",
-                    prop,
-                )
-                for prop in sorted(person_properties)
-            ],
-            backfill_period_days=backfill_days,
-        )
 
     def create_default_user_product_list(self, team: Team, user: User) -> None:
         """Create UserProductList entries for all default sidebar products."""

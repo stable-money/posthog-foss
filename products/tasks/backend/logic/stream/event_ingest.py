@@ -33,8 +33,6 @@ from products.tasks.backend.metrics import observe_stream_write_skipped
 from products.tasks.backend.models import TaskRun
 from products.tasks.backend.push_dispatcher import notify_task_run_turn_completed
 
-from ee.hogai.sandbox import is_turn_complete
-
 logger = structlog.get_logger(__name__)
 
 TASK_RUN_EVENT_INGEST_ROUTE = re.compile(
@@ -392,7 +390,7 @@ async def _heartbeat_workflow_if_needed(redis_stream: TaskRunRedisStream, run_id
         if not dispatched:
             await redis_stream.release_first_agent_activity()
 
-    if is_turn_complete(event):
+    if _is_turn_complete(event):
         await redis_stream.set_agent_active(False)
         await _dispatch_turn_completed_if_interactive(run_id)
         return
@@ -463,6 +461,19 @@ def _dispatch_turn_completed_if_interactive_sync(run_id: str) -> None:
         return
 
     notify_task_run_turn_completed(task_run)
+
+
+def _is_turn_complete(event_data: dict) -> bool:
+    """Mirrors `_is_end_of_turn` in relay_sandbox_events.py: a pi_event's own `turn_completed`
+    type, or the legacy `_posthog/turn_complete` notification."""
+    if event_data.get("type") == "pi_event":
+        pi_event = event_data.get("event")
+        if isinstance(pi_event, dict):
+            return pi_event.get("type") == "turn_completed"
+        return False
+    if event_data.get("type") != "notification":
+        return False
+    return event_data.get("notification", {}).get("method") == "_posthog/turn_complete"
 
 
 def _is_session_update(event: dict) -> bool:

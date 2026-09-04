@@ -36,7 +36,6 @@ from posthog.rate_limit import (
     LLMProxySustainedRateThrottle,
 )
 from posthog.renderers import SafeJSONRenderer, ServerSentEventRenderer
-from posthog.settings import SERVER_GATEWAY_INTERFACE
 
 from products.access_control.backend.facade.user_access_control import AccessControlLevel, UserAccessControl
 from products.ai_observability.backend.api.metrics import LLMA_PROXY_BYOK_REQUESTS, llma_track_latency
@@ -50,8 +49,6 @@ from products.ai_observability.backend.llm import (
 )
 from products.ai_observability.backend.llm.errors import UnsupportedProviderError
 from products.ai_observability.backend.models.provider_keys import LLMProvider, LLMProviderKey
-
-from ee.hogai.utils.asgi import SyncIterableToAsync
 
 logger = structlog.get_logger(__name__)
 
@@ -237,8 +234,7 @@ class LLMProxyViewSet(viewsets.ViewSet):
 
     def _create_streaming_response(self, stream: Generator[bytes]) -> HttpResponseBase:
         """Creates a properly configured SSE streaming response"""
-        astream = SyncIterableToAsync(stream) if SERVER_GATEWAY_INTERFACE == "ASGI" else stream
-        return sse_streaming_response(astream, endpoint="ai_observability_proxy")
+        return sse_streaming_response(stream, endpoint="ai_observability_proxy")
 
     def _handle_completion_request(self, request: Request) -> HttpResponseBase | Response:
         """Handler for completion requests using unified Client"""

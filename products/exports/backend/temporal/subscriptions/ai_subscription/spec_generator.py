@@ -18,26 +18,8 @@ from posthog.models.group_type_mapping import get_group_types_for_project
 from posthog.security.llm_prompt_sanitization import sanitize_core_memory_text, sanitize_user_text
 
 from products.exports.backend.models.subscription import Subscription
-from products.exports.backend.temporal.subscriptions.ai_subscription.prompts import (
-    EVENT_SELECTION_PROMPT,
-    EVENT_SELECTION_PROMPT_NAME,
-    PLAN_GENERATION_PROMPT,
-    PLANNER_PROMPT_NAME,
-    prepend_hogql_query_writing_rules,
-    render_prompt,
-    resolve_prompt,
-)
-from products.exports.backend.temporal.subscriptions.ai_subscription.schemas import (
-    MAX_CHART_CATEGORIES,
-    MAX_CHARTS_PER_REPORT,
-    EnrichedPromptSpec,
-    QueryPlan,
-    RelevantEvents,
-)
+from products.exports.backend.temporal.subscriptions.ai_subscription.schemas import EnrichedPromptSpec, QueryPlan
 from products.posthog_ai.backend.models.assistant import CoreMemory
-
-from ee.hogai.llm import MaxChatOpenAI
-from ee.hogai.utils.feature_flags import is_core_memory_disabled
 
 logger = structlog.get_logger(__name__)
 
@@ -97,8 +79,6 @@ AI_QUERY_PLAN_VERSION = 6
 
 DEFAULT_PLANNER_MODEL = "gpt-4.1"
 DEFAULT_SYNTHESIS_MODEL = "gpt-4.1"
-_PLANNER_LLM_TIMEOUT_SECONDS = 90.0
-_EVENT_SELECTION_LLM_TIMEOUT_SECONDS = 30.0
 
 
 class PromptRejectedError(ValueError):
@@ -287,18 +267,6 @@ def _group_type_labels(team: Team) -> list[str]:
     return labels
 
 
-def _candidate_event_names(raw_names: Sequence[str]) -> dict[str, str]:
-    # {sanitized_name: raw_name}. Sanitized keys are what the selection LLM sees (event names are
-    # user-controlled); raw values feed the EventProperty lookup, which is keyed on the stored name.
-    # First raw wins if two names sanitize to the same string.
-    candidates: dict[str, str] = {}
-    for raw in raw_names:
-        clean = sanitize_user_text(raw, EVENT_NAME_MAX_LENGTH)
-        if clean and clean not in candidates:
-            candidates[clean] = raw
-    return candidates
-
-
 def _normalize_event_token(value: str) -> str:
     # Sanitize (event names are user-controlled) then case-fold + collapse whitespace so a quoted
     # `Export Created` matches a stored `export created`. Empty if nothing survives sanitization.
@@ -360,65 +328,15 @@ def _recent_event_names(team: Team, limit: int) -> list[str]:
     )
 
 
-def _llm_selected_events(
-    team: Team, user: User, prompt: str, candidates: dict[str, str], trace_correlation_id: Optional[Union[int, str]]
-) -> list[str]:
-    # The model picks relevant events from the project's vocabulary (vs lexical matching). Any failure
-    # degrades to no picks rather than breaking generation — deterministic pins still survive.
-    posthog_properties: dict[str, Union[str, int]] = {"feature": "ai_subscription", "stage": "event_selection"}
-    if trace_correlation_id is not None:
-        posthog_properties["subscription_id"] = trace_correlation_id
-    llm = MaxChatOpenAI(
-        model=DEFAULT_PLANNER_MODEL,
-        timeout=_EVENT_SELECTION_LLM_TIMEOUT_SECONDS,
-        user=user,
-        team=team,
-        billable=True,
-        posthog_properties=posthog_properties,
-    ).with_structured_output(RelevantEvents, method="json_schema", include_raw=False)
-
-    rendered_prompt = render_prompt(
-        resolve_prompt(team, EVENT_SELECTION_PROMPT_NAME, EVENT_SELECTION_PROMPT),
-        {"event_names": "\n".join(candidates), "cleaned_prompt": prompt},
-    )
-
-    try:
-        result = llm.invoke([("system", rendered_prompt)])
-    except Exception:
-        logger.warning("ai_subscription.event_selection_failed", team_id=team.id, exc_info=True)
-        return []
-    if not isinstance(result, RelevantEvents):
-        logger.warning("ai_subscription.event_selection_malformed", team_id=team.id)
-        return []
-
-    # candidates.get maps the model's sanitized picks back to raw names and drops hallucinations in one step.
-    selected: list[str] = []
-    seen: set[str] = set()
-    for name in result.events:
-        raw = candidates.get(name)
-        if raw is not None and raw not in seen:
-            seen.add(raw)
-            selected.append(raw)
-    return selected
-
-
 def _select_relevant_events(
     team: Team, user: User, prompt: str, trace_correlation_id: Optional[Union[int, str]] = None
 ) -> list[str]:
-    # Returns RAW event names (the EventProperty lookup is keyed on them).
+    # Returns RAW event names (the EventProperty lookup is keyed on them). The LLM-based
+    # candidate-selection pass is gone; deterministic pins (events the prompt names explicitly)
+    # are the only signal left — this matches the "no candidate vocabulary" fallback the code
+    # already had for a failed/empty LLM pass.
     recent_names = _recent_event_names(team, PINNED_EVENT_SCAN_LIMIT)
-    candidates = _candidate_event_names(recent_names[:CANDIDATE_EVENTS_LIMIT])
-    pinned = _pinned_event_names(prompt, recent_names)
-    if not candidates:
-        # No candidate vocabulary for the LLM pass, but explicit pins still count — the pin scan
-        # covers the full recent-names window, not just the candidate slice.
-        return pinned
-
-    llm_selected = _llm_selected_events(team, user, prompt, candidates, trace_correlation_id)
-
-    # Pins lead so the cap can only ever drop LLM picks — an explicitly named event is never truncated.
-    union_pinned_first = list(dict.fromkeys((*pinned, *llm_selected)))
-    return union_pinned_first[: max(RELEVANT_EVENTS_LIMIT, len(pinned))]
+    return _pinned_event_names(prompt, recent_names)
 
 
 def _event_property_names(team: Team, events: list[str], per_event_limit: int) -> dict[str, list[str]]:
@@ -443,8 +361,6 @@ def _event_property_names(team: Team, events: list[str], per_event_limit: int) -
 
 
 def _load_core_memory_text(team: Team, user: User) -> str:
-    if is_core_memory_disabled(team, user):
-        return ""
     try:
         memory = CoreMemory.objects.filter(team=team).only("text").first()
     except Exception:
@@ -549,75 +465,6 @@ def build_context_blob(
     if safe_core_memory:
         lines.extend(("", "<core_memory>", safe_core_memory, "</core_memory>"))
     return "\n".join(lines)
-
-
-def generate_query_plan(
-    *,
-    cleaned_prompt: str,
-    context_blob: str,
-    team: Team,
-    user: User,
-    trace_correlation_id: Optional[Union[int, str]] = None,
-) -> QueryPlan:
-    # `user is None` is enforced at the public entry point (`generate_ai_report`)
-    # which is the only caller path into here. Don't repeat the check.
-    posthog_properties: dict[str, Union[str, int]] = {"feature": "ai_subscription", "stage": "plan"}
-    if trace_correlation_id is not None:
-        posthog_properties["subscription_id"] = trace_correlation_id
-    llm = MaxChatOpenAI(
-        model=DEFAULT_PLANNER_MODEL,
-        timeout=_PLANNER_LLM_TIMEOUT_SECONDS,
-        user=user,
-        team=team,
-        billable=True,
-        posthog_properties=posthog_properties,
-    ).with_structured_output(QueryPlan, method="json_schema", include_raw=False)
-
-    planner_prompt = prepend_hogql_query_writing_rules(
-        resolve_prompt(team, PLANNER_PROMPT_NAME, PLAN_GENERATION_PROMPT)
-    )
-    rendered_prompt = render_prompt(
-        planner_prompt,
-        {
-            "context_blob": context_blob,
-            "cleaned_prompt": cleaned_prompt,
-            "max_charts": str(MAX_CHARTS_PER_REPORT),
-            "max_categories": str(MAX_CHART_CATEGORIES),
-        },
-    )
-
-    result = llm.invoke([("system", rendered_prompt)])
-    if not isinstance(result, QueryPlan):
-        raise PromptRejectedError("Planner returned a malformed plan.")
-    return result
-
-
-def build_enriched_prompt(
-    *,
-    team: Team,
-    user: User,
-    prompt: Optional[str],
-    window: ReportWindow,
-    trace_correlation_id: Optional[Union[int, str]] = None,
-) -> EnrichedPromptSpec:
-    cleaned = sanitize_prompt(prompt)
-    relevant_events = _select_relevant_events(team, user, cleaned, trace_correlation_id)
-    context_blob = build_context_blob(
-        team,
-        window,
-        relevant_events=relevant_events,
-        core_memory_text=_load_core_memory_text(team, user),
-    )
-    plan = generate_query_plan(
-        cleaned_prompt=cleaned,
-        context_blob=context_blob,
-        team=team,
-        user=user,
-        trace_correlation_id=trace_correlation_id,
-    )
-    return EnrichedPromptSpec(
-        cleaned_prompt=cleaned, context_blob=context_blob, plan=plan, relevant_events=relevant_events
-    )
 
 
 def build_frozen_prompt(

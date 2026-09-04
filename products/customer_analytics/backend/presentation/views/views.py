@@ -109,8 +109,6 @@ from products.customer_analytics.backend.presentation.views.serializers import (
     SupportTicketSerializer,
 )
 
-from ee.hogai.tools.create_notebook.tiptap import markdown_to_tiptap_nodes
-
 # Object-level access levels for the resource ViewSets, matching what
 # ``AccessControlPermission._get_required_access_level`` derives for these scope objects:
 # reads need "viewer", writes need "editor".
@@ -2001,7 +1999,7 @@ class AccountNotebookViewSet(
                 title=data.title,
                 content=data.content,
                 text_content=data.text_content,
-                synthesized_content=_synthesize_notebook_content(data.text_content, data.content),
+                synthesized_content=None,
             ),
             user=cast(User, request.user),
             user_access_control=self.user_access_control,
@@ -2020,23 +2018,6 @@ class AccountNotebookViewSet(
         if not deleted:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-def _synthesize_notebook_content(text_content, existing_content):
-    """When the caller passed Markdown ``text_content`` but no usable ProseMirror ``content``
-    tree, build one from the Markdown. Agents calling the MCP notebook-create tool typically
-    send ``text_content`` only (hand-writing ProseMirror is awkward), and NotebookScene only
-    renders ``content`` — so without this the result is a blank page. The tiptap helper lives
-    in ``ee.hogai`` and stays in the view so it never reaches the facade import path. Returns
-    ``None`` when the caller already supplied usable content (or no markdown)."""
-    has_usable_content = (
-        isinstance(existing_content, dict)
-        and existing_content.get("type") == "doc"
-        and isinstance(existing_content.get("content"), list)
-    )
-    if text_content and not has_usable_content:
-        return {"type": "doc", "content": markdown_to_tiptap_nodes(text_content) or [{"type": "paragraph"}]}
-    return None
 
 
 # Module-level (not ViewSet static methods) so the ``list[int]`` return annotation resolves to

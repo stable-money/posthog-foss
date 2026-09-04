@@ -1,5 +1,5 @@
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -9,12 +9,11 @@ from django.utils import timezone
 
 import httpx
 import structlog
+from asgiref.sync import sync_to_async
 
 from posthog.api.streaming import sse_streaming_response
 from posthog.security.url_validation import is_url_allowed
 from posthog.settings import SERVER_GATEWAY_INTERFACE
-
-from ee.hogai.utils.asgi import SyncIterableToAsync
 
 from .models import MCPAuditEvent, MCPGatewayServer, MCPServerInstallation, MCPServerInstallationTool
 from .oauth import TokenRefreshError, is_token_expiring, refresh_installation_token
@@ -605,9 +604,29 @@ def _stream_upstream(upstream_response: httpx.Response, client: httpx.Client) ->
         client.close()
 
 
+class _SyncIterableToAsync:
+    """Wrap a sync iterable as an async one by running each `next()` call in a thread.
+
+    Needed under ASGI, where `StreamingHttpResponse` awaits the stream in the event loop and a
+    plain sync generator would block it.
+    """
+
+    def __init__(self, sync_iterable: Iterator[bytes]) -> None:
+        self._iterator = iter(sync_iterable)
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self
+
+    async def __anext__(self) -> bytes:
+        try:
+            return await sync_to_async(next)(self._iterator)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+
 def _build_sse_response(upstream_response: httpx.Response, client: httpx.Client) -> HttpResponseBase:
     stream = _stream_upstream(upstream_response, client)
-    astream = SyncIterableToAsync(stream) if SERVER_GATEWAY_INTERFACE == "ASGI" else stream
+    astream = _SyncIterableToAsync(stream) if SERVER_GATEWAY_INTERFACE == "ASGI" else stream
     response = sse_streaming_response(astream, endpoint="mcp_store_proxy")
 
     if not isinstance(response, StreamingHttpResponse):

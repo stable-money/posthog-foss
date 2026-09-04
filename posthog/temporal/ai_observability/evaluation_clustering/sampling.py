@@ -1,8 +1,6 @@
-"""Stage A — per-job sample $ai_evaluation events, compose text, enqueue embeddings."""
+"""Stage A — per-job sample $ai_evaluation events."""
 
 from datetime import datetime
-from typing import Any
-from uuid import uuid4
 
 import structlog
 from temporalio import activity
@@ -16,79 +14,10 @@ from posthog.hogql.query import execute_hogql_query
 from posthog.clickhouse.query_tagging import Feature, Product, tags_context
 from posthog.models.team import Team
 from posthog.sync import database_sync_to_async
-from posthog.temporal.ai_observability.evaluation_clustering.constants import (
-    AI_OBSERVABILITY_EVALUATION_DOCUMENT_ID_JOB_DELIMITER,
-    AI_OBSERVABILITY_EVALUATION_DOCUMENT_TYPE,
-    AI_OBSERVABILITY_EVALUATION_EMBEDDING_MODEL,
-    AI_OBSERVABILITY_EVALUATION_JOB_ID_METADATA_KEY,
-    AI_OBSERVABILITY_EVALUATION_RENDERING,
-)
 from posthog.temporal.ai_observability.evaluation_clustering.models import SamplerActivityInputs, SamplerActivityResult
 from posthog.temporal.common.heartbeat import Heartbeater
 
-from ee.hogai.llm_traces_summaries.constants import LLM_TRACES_SUMMARIES_PRODUCT
-from ee.hogai.llm_traces_summaries.tools.embed_summaries import LLMTracesSummarizerEmbedder
-
 logger = structlog.get_logger(__name__)
-
-
-def _compose_evaluation_text(
-    name: str | None,
-    result: Any,
-    applicable: Any,
-    reasoning: str | None,
-    description: str | None = None,
-) -> str:
-    """Build the short text representation embedded for one $ai_evaluation event.
-
-    Format intentionally compact so embeddings pick up on evaluator + verdict + reasoning
-    without being dominated by boilerplate. The optional evaluator ``description`` comes
-    from the ``Evaluation`` model (not the event) — including it helps the embedding
-    capture intent/rubric, not just the emitted reasoning, which is especially useful
-    for short Hog-runtime reasoning like ``"OK"`` or ``"Total tokens 17250 exceeds 4000"``.
-    The ``Description:`` line is omitted when empty so blank descriptions don't inject
-    boilerplate that flattens the embedding space.
-    """
-    verdict: str
-    # $ai_evaluation_applicable is only set when the evaluation allows N/A. When it's
-    # present and false, the evaluator decided the criteria didn't apply — surface that
-    # instead of the pass/fail boolean.
-    if applicable is False or (isinstance(applicable, str) and applicable.lower() == "false"):
-        verdict = "n/a"
-    elif result is True or (isinstance(result, str) and result.lower() == "true"):
-        verdict = "pass"
-    elif result is False or (isinstance(result, str) and result.lower() == "false"):
-        verdict = "fail"
-    else:
-        verdict = "unknown"
-
-    lines = [f"Evaluation: {name or 'unknown'}"]
-    if description:
-        lines.append(f"Description: {description}")
-    lines.append(f"Verdict: {verdict}")
-    lines.append(f"Reasoning: {reasoning or ''}")
-    return "\n".join(lines)
-
-
-def _fetch_evaluation_descriptions(team_id: int, evaluation_ids: list[str]) -> dict[str, str]:
-    """Batch-fetch Evaluation.description for the evaluators we sampled.
-
-    One Django query per sampler run keyed by the handful of distinct evaluator ids
-    in the sample — much cheaper than joining per-row. Missing or empty descriptions
-    are silently skipped by the caller (``_compose_evaluation_text`` omits the line).
-    """
-    # Local import: the activity's top-level import graph stays free of Django model modules
-    # so workflow-side imports don't accidentally pull them in via Temporal's sandbox.
-    from products.ai_observability.backend.models.evaluations import Evaluation
-
-    # IDs come off ``$ai_evaluation_id`` as strings; filter out empty/unknown so we
-    # don't ship a huge empty-id set to Postgres.
-    ids = {eid for eid in evaluation_ids if eid}
-    if not ids:
-        return {}
-
-    rows = Evaluation.objects.filter(team_id=team_id, id__in=ids).values_list("id", "description")
-    return {str(eid): description for eid, description in rows if description}
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -166,64 +95,12 @@ def _sample_and_embed_sync(inputs: SamplerActivityInputs) -> SamplerActivityResu
         )
         return SamplerActivityResult(team_id=team.id, job_id=inputs.job_id, sampled=0, embedded=0)
 
-    # `rendering` stays a fixed low-cardinality enum (the render mode). The job id that scopes
-    # Stage B's read is carried in the embedding `metadata` instead — see the column-cardinality
-    # note on AI_OBSERVABILITY_EVALUATION_RENDERING.
-    rendering = AI_OBSERVABILITY_EVALUATION_RENDERING
-    metadata = {AI_OBSERVABILITY_EVALUATION_JOB_ID_METADATA_KEY: inputs.job_id}
-    # Use the small (1536-dim) model — see AI_OBSERVABILITY_EVALUATION_EMBEDDING_MODEL in constants.py.
-    # The lazy import keeps EmbeddingModelName out of the module top-level (avoids pulling
-    # posthog.schema into the workflow-side graph via the activity module).
-    from posthog.schema import EmbeddingModelName
-
-    embedder = LLMTracesSummarizerEmbedder(
-        team=team,
-        embedding_model_name=EmbeddingModelName(AI_OBSERVABILITY_EVALUATION_EMBEDDING_MODEL),
-    )
-
-    # Enrich the composed text with each evaluator's description (from the Evaluation
-    # model) so the embedding picks up on rubric/intent, not just the emitted reasoning.
-    # Batched to a single Django query per run on the unique evaluator ids we sampled.
-    descriptions_by_id = _fetch_evaluation_descriptions(
-        team_id=team.id,
-        evaluation_ids=[row[5] for row in rows if row[5]],
-    )
-
-    embedded = 0
-    for row in rows:
-        event_uuid = row[0]
-        eval_id = row[5]
-        content = _compose_evaluation_text(
-            name=row[1],
-            result=row[2],
-            applicable=row[3],
-            reasoning=row[4],
-            description=descriptions_by_id.get(eval_id),
-        )
-        # Scope document_id per (event, job): the job id is appended to the event uuid so two jobs
-        # that sample the same event on the same day don't share a ReplacingMergeTree key and
-        # collapse, which would drop a job's embeddings (see the delimiter note in constants).
-        # Stage B strips it back to the bare uuid. Still idempotent per job: the same job re-running
-        # the same window lands the same row.
-        document_id = (
-            f"{event_uuid or str(uuid4())}{AI_OBSERVABILITY_EVALUATION_DOCUMENT_ID_JOB_DELIMITER}{inputs.job_id}"
-        )
-        embedder.embed_document(
-            content=content,
-            document_id=document_id,
-            document_type=AI_OBSERVABILITY_EVALUATION_DOCUMENT_TYPE,
-            rendering=rendering,
-            product=LLM_TRACES_SUMMARIES_PRODUCT,
-            metadata=metadata,
-        )
-        embedded += 1
-
     logger.info(
         "eval_sampler_embedded",
         team_id=team.id,
         job_id=inputs.job_id,
         sampled=len(rows),
-        embedded=embedded,
+        embedded=0,
         window_start=inputs.window_start,
         window_end=inputs.window_end,
     )
@@ -232,7 +109,7 @@ def _sample_and_embed_sync(inputs: SamplerActivityInputs) -> SamplerActivityResu
         team_id=team.id,
         job_id=inputs.job_id,
         sampled=len(rows),
-        embedded=embedded,
+        embedded=0,
     )
 
 

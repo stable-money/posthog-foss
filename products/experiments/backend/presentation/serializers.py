@@ -34,9 +34,7 @@ from products.access_control.backend.presentation.access_control import UserAcce
 from products.ai_observability.backend.models.llm_prompt import LLMPrompt
 from products.experiments.backend.experiment_service import ExperimentService
 from products.experiments.backend.facade.contracts import CreateExperimentInput
-from products.experiments.backend.hogql_queries.experiment_metric_fingerprint import compute_metric_fingerprint
 from products.experiments.backend.hogql_queries.exposure_query_logic import resolve_default_exposure_event
-from products.experiments.backend.hogql_queries.utils import get_experiment_stats_method
 from products.experiments.backend.llm_metric_templates import TEMPLATE_NAMES
 from products.experiments.backend.metric_events import MetricSourceRole
 from products.experiments.backend.metric_utils import apply_metric_date_range, refresh_action_names_in_metric
@@ -60,9 +58,6 @@ from products.experiments.backend.session_event_deltas import (
 )
 from products.feature_flags.backend.api.feature_flag import MinimalFeatureFlagSerializer
 from products.feature_flags.backend.models.feature_flag import FeatureFlag, experiment_eligibility_error
-
-from ee.clickhouse.views.experiment_holdouts import ExperimentHoldoutSerializer
-from ee.clickhouse.views.experiment_saved_metrics import ExperimentToSavedMetricSerializer
 
 tracer = trace.get_tracer(__name__)
 
@@ -153,7 +148,6 @@ class ExperimentBaseSerializer(UserAccessControlSerializerMixin, serializers.Mod
     )
     created_by = UserBasicSerializer(read_only=True)
     feature_flag = serializers.SerializerMethodField(read_only=True)
-    holdout = ExperimentHoldoutSerializer(read_only=True)
     name = serializers.CharField(
         max_length=400,
         help_text="Name of the experiment.",
@@ -327,7 +321,6 @@ class ExperimentSerializer(ExperimentBaseSerializer):
         allow_null=True,
         help_text="ID of a holdout group to exclude from the experiment.",
     )
-    saved_metrics = ExperimentToSavedMetricSerializer(many=True, source="experimenttosavedmetric_set", read_only=True)
     saved_metrics_ids = serializers.ListField(
         child=serializers.JSONField(),
         required=False,
@@ -456,14 +449,12 @@ class ExperimentSerializer(ExperimentBaseSerializer):
             "end_date",
             "feature_flag_key",
             "feature_flag",
-            "holdout",
             "holdout_id",
             "exposure_cohort",
             "parameters",
             "running_time_calculation",
             "excluded_variants",
             "secondary_metrics",
-            "saved_metrics",
             "saved_metrics_ids",
             "filters",
             "archived",
@@ -502,8 +493,6 @@ class ExperimentSerializer(ExperimentBaseSerializer):
             "updated_at",
             "feature_flag",
             "exposure_cohort",
-            "holdout",
-            "saved_metrics",
             "status",
             "can_freeze_exposure",
             "resolved_exposure_event",
@@ -553,26 +542,6 @@ class ExperimentSerializer(ExperimentBaseSerializer):
                     metric = refreshed_metric
 
                 apply_metric_date_range(metric, new_date_range)
-
-        # Update date ranges in saved metrics
-        # Note: Action name refresh is handled by ExperimentToSavedMetricSerializer.to_representation
-        saved_metrics = data.get("saved_metrics", [])
-        with tracer.start_as_current_span("ExperimentSerializer.saved_metric_fingerprints") as span:
-            span.set_attribute("saved_metric_count", len(saved_metrics))
-            for saved_metric in saved_metrics:
-                if saved_metric.get("query"):
-                    apply_metric_date_range(saved_metric["query"], new_date_range)
-
-                    # Add fingerprint to saved metric returned from API
-                    # so that frontend knows what timeseries records to query
-                    saved_metric["query"]["fingerprint"] = compute_metric_fingerprint(
-                        saved_metric["query"],
-                        instance.start_date,
-                        get_experiment_stats_method(instance),
-                        instance.exposure_criteria,
-                        only_count_matured_users=instance.only_count_matured_users,
-                        excluded_variants=instance.excluded_variants or [],
-                    )
 
         return data
 
@@ -1047,7 +1016,6 @@ class ExperimentBasicSerializer(ExperimentBaseSerializer):
             "end_date",
             "feature_flag_key",
             "feature_flag",
-            "holdout",
             "exposure_cohort",
             "parameters",
             "running_time_calculation",
@@ -1076,7 +1044,6 @@ class ExperimentBasicSerializer(ExperimentBaseSerializer):
             "updated_at",
             "feature_flag",
             "exposure_cohort",
-            "holdout",
             "status",
             "user_access_level",
         ]

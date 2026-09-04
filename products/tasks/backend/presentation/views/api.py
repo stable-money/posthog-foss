@@ -197,8 +197,6 @@ from products.tasks.backend.presentation.serializers import (
     WizardCloudRunSerializer,
 )
 
-from ee.hogai.utils.aio import async_to_sync
-
 
 class OctetStreamParser(BaseParser):
     media_type = "application/octet-stream"
@@ -229,6 +227,24 @@ def _pi_cloud_runtime_disabled_response() -> Response:
         TaskRunErrorResponseSerializer({"error": "Pi cloud runtime is disabled"}).data,
         status=status.HTTP_403_FORBIDDEN,
     )
+
+
+def _async_generator_to_sync_iterator(make_async_gen):
+    """Drain an async generator on a dedicated event loop, yielding each item synchronously.
+
+    Used to serve an SSE stream body under WSGI, where no event loop is already running to
+    drive the async generator directly the way ASGI can.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        agen = make_async_gen()
+        while True:
+            try:
+                yield loop.run_until_complete(agen.__anext__())
+            except StopAsyncIteration:
+                break
+    finally:
+        loop.close()
 
 
 TASKS_PREWARM_SANDBOX_FLAG = "tasks-prewarm-sandbox"
@@ -3568,7 +3584,9 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
         # long-lived stream begins — see sse_streaming_response. The stream body is
         # Redis and object storage only, so it never re-acquires one.
         return sse_streaming_response(
-            async_stream() if settings.SERVER_GATEWAY_INTERFACE == "ASGI" else async_to_sync(lambda: async_stream()),
+            async_stream()
+            if settings.SERVER_GATEWAY_INTERFACE == "ASGI"
+            else _async_generator_to_sync_iterator(async_stream),
             endpoint="task_run_log",
         )
 

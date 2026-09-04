@@ -38,9 +38,37 @@ from products.tasks.backend.facade.onboarding_prompt import (
 )
 from products.tasks.backend.models import Task, TaskClientProvenance
 
-from ee.billing.salesforce_enrichment.constants import PERSONAL_EMAIL_DOMAINS
-
 logger = structlog.get_logger(__name__)
+
+# Common free/personal email providers, used to skip company-domain research for signups
+# that aren't on a company domain.
+PERSONAL_EMAIL_DOMAINS = frozenset(
+    {
+        "gmail.com",
+        "yahoo.com",
+        "hotmail.com",
+        "outlook.com",
+        "live.com",
+        "msn.com",
+        "aol.com",
+        "icloud.com",
+        "me.com",
+        "mac.com",
+        "protonmail.com",
+        "proton.me",
+        "gmx.com",
+        "gmx.net",
+        "mail.com",
+        "yandex.com",
+        "zoho.com",
+        "fastmail.com",
+        "hey.com",
+        "qq.com",
+        "163.com",
+        "126.com",
+        "naver.com",
+    }
+)
 
 ONBOARDING_SESSION_TITLE = "Getting set up"
 ONBOARDING_SESSION_PAID_MODEL = "claude-opus-4-8"

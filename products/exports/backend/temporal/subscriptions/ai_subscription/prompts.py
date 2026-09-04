@@ -7,8 +7,6 @@ from posthog.models import Team
 from posthog.ph_client import ph_scoped_capture
 from posthog.storage.llm_prompt_cache import get_prompt_by_name_from_cache
 
-from ee.hogai.chat_agent.sql.prompts import CORE_MEMORY_USAGE_INSTRUCTION, HOGQL_QUERY_WRITING_RULES
-
 logger = structlog.get_logger(__name__)
 
 HOGQL_QUERYING_SKILL_LEARNINGS = """Portable query-writing learnings from the querying-posthog-data skill:
@@ -45,11 +43,6 @@ HOGQL_AI_SUBSCRIPTION_RULES = """Scheduled-report query-writing rules:
 
 HOGQL_AI_SUBSCRIPTION_QUERY_WRITING_RULES = "\n\n".join(
     (
-        "The ChatAgent HogQL syntax and relationship rules below are authoritative. Later instructions "
-        "may specialize the report window, output shape, or cost limits; otherwise, if they conflict, "
-        "follow the ChatAgent rules.",
-        CORE_MEMORY_USAGE_INSTRUCTION,
-        HOGQL_QUERY_WRITING_RULES,
         HOGQL_QUERYING_SKILL_LEARNINGS,
         HOGQL_AI_SUBSCRIPTION_RULES,
     )
@@ -372,10 +365,6 @@ AI_SUBSCRIPTION_SYNTHESIS_PROMPT = (
 You are PostHog's analyst. Given a user's prompt, project context, and the results of several HogQL
 queries that were executed against the user's project, produce a concise, helpful markdown report
 that answers the prompt.
-
-"""
-    + CORE_MEMORY_USAGE_INSTRUCTION
-    + """
 
 Voice: write like a sharp colleague sharing findings, not a management consultant. Direct,
 friendly, and second-person ("you", "your project"). Avoid corporate jargon entirely — no

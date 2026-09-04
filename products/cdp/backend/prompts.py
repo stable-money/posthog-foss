@@ -3,36 +3,9 @@ from collections.abc import Iterable, Iterator
 # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml (XML generation only, no parsing - no XXE risk)
 from xml.etree import ElementTree as ET
 
-from posthog.schema import PropertyOperator
-
 from posthog.taxonomy.taxonomy import CoreFilterDefinition, visible_definitions
 
-from products.cdp.backend.models.hog_functions.hog_function import TYPES_WITH_TRANSPILED_FILTERS, HogFunctionType
-
-from ee.hogai.summarizers.property_filters import PROPERTY_FILTER_VERBOSE_NAME
-
-# `flag_evaluates_to` compiles only on a `type: "flag"` filter. Hog function filters are only ever
-# event, person, or group, and `property_to_expr` raises `NotImplementedError` for those.
-UNSUPPORTED_FILTER_OPERATORS = frozenset({PropertyOperator.FLAG_EVALUATES_TO})
-
-# These operators emit `sortableSemver` and `multiSearchAnyCaseInsensitive`, which the JavaScript
-# STL never defines. On the types that transpile filters instead of compiling bytecode, a filter
-# using one saves without error and then throws `ReferenceError` on the first event.
-JS_UNSUPPORTED_FILTER_OPERATORS = frozenset(
-    {
-        PropertyOperator.SEMVER_EQ,
-        PropertyOperator.SEMVER_NEQ,
-        PropertyOperator.SEMVER_GT,
-        PropertyOperator.SEMVER_GTE,
-        PropertyOperator.SEMVER_LT,
-        PropertyOperator.SEMVER_LTE,
-        PropertyOperator.SEMVER_TILDE,
-        PropertyOperator.SEMVER_CARET,
-        PropertyOperator.SEMVER_WILDCARD,
-        PropertyOperator.ICONTAINS_MULTI,
-        PropertyOperator.NOT_ICONTAINS_MULTI,
-    }
-)
+from products.cdp.backend.models.hog_functions.hog_function import HogFunctionType
 
 # Transformations run during ingestion against `TRANSFORMATION_AVAILABLE_GLOBALS`, which holds no
 # `person` and no group slots, so a person or group filter evaluates against null and never matches.
@@ -975,21 +948,6 @@ def _is_person_only(name: str, event_property_names: set[str]) -> bool:
     )
 
 
-def render_filter_operator_taxonomy(function_type: str) -> str:
-    unsupported = UNSUPPORTED_FILTER_OPERATORS
-    if function_type in TYPES_WITH_TRANSPILED_FILTERS:
-        unsupported = unsupported | JS_UNSUPPORTED_FILTER_OPERATORS
-    root = ET.Element("filter_taxonomy")
-    ET.SubElement(root, "usage").text = "A filter's `operator` field takes the `value` below, never the `meaning`."
-    for operator, verbose_name in PROPERTY_FILTER_VERBOSE_NAME.items():
-        if operator in unsupported:
-            continue
-        entry = ET.SubElement(root, "operator")
-        ET.SubElement(entry, "value").text = operator.value
-        ET.SubElement(entry, "meaning").text = verbose_name
-    return ET.tostring(root, encoding="unicode")
-
-
 HOG_FUNCTION_FILTERS_SYSTEM_PROMPT = """You are an expert at creating filters for PostHog hog functions.
 
 Create filters based on the user's instructions. Return the filters as a JSON object with the following structure:
@@ -1039,7 +997,6 @@ def render_filters_system_prompt(function_type: str, current_filters: str) -> st
             EVENT_ONLY_FILTER_SCOPE
             if function_type in TYPES_WITHOUT_PERSON_GLOBALS
             else render_person_property_taxonomy(),
-            render_filter_operator_taxonomy(function_type),
             # Last, so the taxonomy above stays an identical prefix across teams and requests
             # and the provider's prompt cache can hit it.
             f"Current filters: {current_filters}\nFunction type: {function_type}",

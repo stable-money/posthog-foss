@@ -24,8 +24,6 @@ from posthog.utils import get_safe_cache
 from products.access_control.backend.models.access_control import AccessControl
 from products.access_control.backend.models.role import RoleMembership
 
-from ee.models.explicit_team_membership import ExplicitTeamMembership
-
 ORG_SERIALIZER_CACHE_TTL_SECONDS = 60 * 60
 ORG_SERIALIZER_VERSION_TTL_SECONDS = 7 * 24 * 60 * 60
 _ORG_SERIALIZER_VERSION_KEY_PREFIX = "org_serializer_version:"
@@ -98,7 +96,6 @@ _INVALIDATION_SOURCES: list[tuple[type[Model], Callable[[Any], str | None]]] = [
     (Project, _instance_org_id),
     (OrganizationMembership, _instance_org_id),
     (AccessControl, _access_control_to_org_id),
-    (ExplicitTeamMembership, _team_id_to_org_id),
     (RoleMembership, _role_id_to_org_id),
 ]
 

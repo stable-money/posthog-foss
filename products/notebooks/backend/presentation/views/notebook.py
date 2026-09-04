@@ -13,6 +13,7 @@ from django.http import Http404, JsonResponse
 from django.utils.timezone import now
 
 import structlog
+from asgiref.sync import async_to_sync, sync_to_async
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
@@ -156,10 +157,23 @@ from products.notebooks.backend.temporal.sql_v2 import SQLV2RunInput
 from products.tasks.backend.facade.exceptions import SandboxProvisionError
 from products.tasks.backend.facade.sandbox import SandboxStatus
 
-from ee.hogai.utils.aio import async_to_sync
-from ee.hogai.utils.asgi import SyncIterableToAsync
-
 logger = structlog.get_logger(__name__)
+
+
+class SyncIterableToAsync:
+    """Wrap a sync iterable so `async for` pulls each item via a thread, keeping the event loop free."""
+
+    def __init__(self, iterable):
+        self._iterator = iter(iterable)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return await sync_to_async(next, thread_sensitive=False)(self._iterator)
+        except StopIteration:
+            raise StopAsyncIteration
 
 # Raised when a cell reads a sibling whose last result lives somewhere this run can't reach.
 _CROSS_ENGINE_REF_ERROR = (

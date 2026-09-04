@@ -26,8 +26,6 @@ from products.tasks.backend.logic.stream.redis_stream import (
 )
 from products.tasks.backend.models import TaskRun as TaskRunModel
 
-from ee.hogai.sandbox import is_turn_complete
-
 # Reuse the ACP event helpers, signal dispatcher, and SSE reconnect tuning from relay_sandbox_events
 # so the two relays derive/emit signals and drive their SSE transport from identical logic.
 from .relay_sandbox_events import (
@@ -36,6 +34,7 @@ from .relay_sandbox_events import (
     SSE_READ_TIMEOUT_SECONDS,
     _extract_agent_message_text,
     _extract_tool_call_step,
+    _is_end_of_turn,
     _is_session_update,
     _signal_safely,
 )
@@ -87,7 +86,7 @@ class SlackAgentDesignSignalEmitter:
                 self._awaiting_turn = True
             return []
 
-        if is_turn_complete(event_data):
+        if _is_end_of_turn(event_data):
             if self._turn_active:
                 self._turn_active = False
                 return [("turn_completed", None)]

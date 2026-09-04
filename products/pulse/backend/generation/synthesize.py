@@ -11,15 +11,11 @@ from posthog.security.llm_prompt_sanitization import (
     INSIGHT_NAME_MAX_LEN,
     sanitize_user_text,
 )
-from posthog.sync import database_sync_to_async
 
-from products.pulse.backend.config import LLM_MAX_RETRIES, LLM_TIMEOUT_SECONDS, SYNTHESIS_MODEL, BriefSettings
-from products.pulse.backend.generation.prompts import PULSE_SYNTHESIS_PROMPT_KEY, SYNTHESIZE_PROMPT, _get_managed_prompt
-from products.pulse.backend.generation.schemas import KIND_DESCRIPTIONS, BriefOut
+from products.pulse.backend.config import BriefSettings
+from products.pulse.backend.generation.schemas import BriefOut
 from products.pulse.backend.models import BriefConfig
 from products.pulse.backend.sources.base import SourceItem, build_evidence_index
-
-from ee.hogai.llm import MaxChatOpenAI
 
 logger = structlog.get_logger(__name__)
 
@@ -78,36 +74,6 @@ async def synthesize_brief(
     # Quiet periods must cost ~nothing: no items, no LLM call.
     if not items:
         return BriefOut(sections=[], opportunities=[])
-    settings = BriefSettings.from_config(config)
-    # The focus text is fenced in a <team_focus> block. sanitize_user_text strips invisible chars,
-    # LLM framing tags (including the fence itself), and collapses newlines, so user configuration
-    # can't forge the fence or inject instruction-shaped content; empty falls back to a neutral default.
-    focus_prompt = sanitize_user_text(config.focus_prompt if config else "", max_len=2000) or "the whole product"
-    template = await database_sync_to_async(_get_managed_prompt, thread_sensitive=False)(
-        team, PULSE_SYNTHESIS_PROMPT_KEY, SYNTHESIZE_PROMPT
-    )
-    rendered = template.format(
-        focus_prompt=focus_prompt,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-        lookback_days=lookback_days,
-        max_opportunities=settings.max_opportunities,
-        kind_descriptions=", ".join(f'"{kind}" = {description}' for kind, description in KIND_DESCRIPTIONS.items()),
-        items_block=_render_items(items),
-    )
-    llm = MaxChatOpenAI(
-        model=SYNTHESIS_MODEL,
-        timeout=LLM_TIMEOUT_SECONDS,
-        max_retries=LLM_MAX_RETRIES,
-        user=user,
-        team=team,
-        billable=True,
-        posthog_properties={"ai_product": "pulse", "ai_feature": "brief_synthesis"},
-    ).with_structured_output(BriefOut, method="json_schema", include_raw=False)
-    # database_sync_to_async (not to_thread): MaxChatOpenAI reads billing/quota from the ORM
-    result = await database_sync_to_async(llm.invoke, thread_sensitive=False)([("system", rendered)])
-    if not isinstance(result, BriefOut):
-        # Raise so the workflow marks the brief FAILED — a malformed output is not a quiet week.
-        logger.error("pulse_synthesize_unexpected_output", team_id=team.id, output_type=type(result).__name__)
-        raise ValueError(f"LLM returned unexpected structured output type: {type(result).__name__}")
-    return apply_say_less_gate(result, settings)
+    # Raise so the workflow marks the brief FAILED: no LLM client is available in this build.
+    logger.error("pulse_synthesize_unavailable", team_id=team.id)
+    raise RuntimeError("Pulse brief synthesis is unavailable: no LLM client in this build.")

@@ -93,8 +93,6 @@ from products.surveys.backend.summarization import fetch_responses, format_as_ma
 from products.surveys.backend.translation import generate_survey_translation
 from products.surveys.backend.util import SurveyEventProperties, get_archived_response_uuids
 
-from ee.surveys.summaries.headline_summary import generate_survey_headline
-
 # Constants for better maintainability
 logger = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -2890,9 +2888,8 @@ class SurveyViewSet(TeamAndOrgViewSetMixin, AccessControlViewSetMixin, viewsets.
     @extend_schema(
         description=(
             "Summarize survey responses. When `question_index` or `question_id` is provided, returns a per-question "
-            "theme summary using cached `survey.question_summaries` when fresh. When neither is provided, returns "
-            "the survey-wide headline summary (delegates to summary_headline). Pass `force_refresh=true` in the body "
-            "to bypass caches."
+            "theme summary using cached `survey.question_summaries` when fresh. Pass `force_refresh=true` in the "
+            "body to bypass caches."
         ),
         # request= is critical here — without it drf-spectacular falls back to the default ModelViewSet serializer
         # (SurveySerializerCreateUpdateOnly) and generates a Zod schema demanding name/type fields that have nothing
@@ -2936,9 +2933,8 @@ class SurveyViewSet(TeamAndOrgViewSetMixin, AccessControlViewSetMixin, viewsets.
         question_id = request.query_params.get("question_id", None)
 
         if question_index is None and question_id is None:
-            # No question specified — dispatch to the survey-wide headline summarizer.
-            # Keeps a single MCP tool surface for both per-question and whole-survey summarization.
-            return self.summary_headline(request, **kwargs)
+            # Survey-wide headline summarization is not available.
+            return Response(status=status.HTTP_404_NOT_FOUND)
 
         # Check for force_refresh flag in request body
         force_refresh = request.data.get("force_refresh", False)
@@ -2968,7 +2964,7 @@ class SurveyViewSet(TeamAndOrgViewSetMixin, AccessControlViewSetMixin, viewsets.
         if not environment_is_allowed or not has_gemini_api_key:
             raise exceptions.ValidationError("survey summary is only supported in PostHog Cloud")
 
-        # Same AI-processing gate that summary_headline uses — applies to per-question summaries too.
+        # Same AI-processing gate used elsewhere for AI-generated survey summaries.
         if not self.team.organization.is_ai_data_processing_approved:
             return Response(
                 {"error": "AI data processing must be approved to generate summaries"},
@@ -3098,68 +3094,6 @@ class SurveyViewSet(TeamAndOrgViewSetMixin, AccessControlViewSetMixin, viewsets.
 
         # let the browser cache for half the time we cache on the server
         return Response(response_data, headers={"Cache-Control": "max-age=15"})
-
-    @action(methods=["POST"], detail=True, url_path="summary_headline", required_scopes=["survey:read"])
-    def summary_headline(self, request: request.Request, **kwargs):
-        survey_id = kwargs["pk"]
-        logger.info("[summary_headline] request received", survey_id=survey_id)
-
-        if not request.user.is_authenticated:
-            raise exceptions.NotAuthenticated()
-
-        user = cast(User, request.user)
-
-        logger.info("[summary_headline] checking survey exists", survey_id=survey_id)
-        if not Survey.objects.filter(id=survey_id, team__project_id=self.project_id).exists():
-            return Response(status=status.HTTP_404_NOT_FOUND)
-
-        logger.info("[summary_headline] fetching survey", survey_id=survey_id)
-        survey = self.get_object()
-        logger.info("[summary_headline] survey fetched", survey_id=survey_id)
-        force_refresh = request.data.get("force_refresh", False)
-
-        if not force_refresh and survey.headline_summary and survey.headline_response_count:
-            return Response(
-                {
-                    "headline": survey.headline_summary,
-                    "responses_sampled": survey.headline_response_count,
-                    "has_more": False,
-                }
-            )
-
-        if not self.team.organization.is_ai_data_processing_approved:
-            return Response(
-                {"error": "AI data processing must be approved to generate summaries"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        logger.info("[summary_headline] calling generate_survey_headline", survey_id=survey_id)
-        result = generate_survey_headline(
-            survey=survey,
-            team=self.team,
-            user=user,
-        )
-
-        timings_header = result.pop("timings_header", None)
-
-        survey.headline_summary = result.get("headline")
-        survey.headline_response_count = result.get("responses_sampled", 0)
-        survey.save(update_fields=["headline_summary", "headline_response_count"])
-
-        posthoganalytics.capture(
-            event="survey headline generated",
-            distinct_id=str(user.distinct_id),
-            properties={
-                "survey_id": survey_id,
-                "responses_sampled": result.get("responses_sampled", 0),
-                "has_more": result.get("has_more", False),
-            },
-        )
-
-        r = Response(result)
-        if timings_header:
-            r.headers["Server-Timing"] = timings_header
-        return r
 
     @extend_schema(
         request=GenerateSurveyTranslationsRequestSerializer,

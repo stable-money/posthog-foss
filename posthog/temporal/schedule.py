@@ -6,6 +6,7 @@ from django.conf import settings
 
 import structlog
 from asgiref.sync import async_to_sync
+from ee.billing.salesforce_enrichment.constants import DEFAULT_CHUNK_SIZE
 from temporalio import common
 from temporalio.client import (
     Client,
@@ -22,10 +23,6 @@ from temporalio.client import (
 
 from posthog.cloud_utils import is_cloud
 from posthog.slo.types import SloArea, SloConfig, SloOperation
-from posthog.temporal.ai.checkpoint_compaction.schedule import (
-    create_checkpoint_compaction_schedule,
-    should_register_checkpoint_compaction_schedule,
-)
 from posthog.temporal.ai_observability.eval_reports.schedule import (
     create_count_trigger_schedule,
     create_eval_reports_schedule,
@@ -123,8 +120,6 @@ from products.signals.backend.temporal.agentic.schedule import (
 )
 from products.web_analytics.backend.temporal.digest_notification.types import WADigestNotificationInput
 from products.web_analytics.backend.temporal.weekly_digest.types import WAWeeklyDigestInput
-
-from ee.billing.salesforce_enrichment.constants import DEFAULT_CHUNK_SIZE
 
 logger = structlog.get_logger(__name__)
 
@@ -959,8 +954,6 @@ if settings.CLOUD_DEPLOYMENT:
     schedules.append(create_replay_vision_gemini_cleanup_sweep_schedule)
     schedules.append(create_run_usage_reports_schedule)
     schedules.append(create_finalize_usage_reports_schedule)
-    if should_register_checkpoint_compaction_schedule():
-        schedules.append(create_checkpoint_compaction_schedule)
     # The sweep re-fetches each region's own orgs from Harmonic, and only US and EU carry the key.
     if settings.CLOUD_DEPLOYMENT in ("US", "EU"):
         schedules.append(create_icp_reenrichment_sweep_schedule)

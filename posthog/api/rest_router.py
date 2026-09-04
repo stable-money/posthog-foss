@@ -13,9 +13,6 @@ from posthog.api.wizard import http as wizard
 from posthog.products import load_product_modules
 from posthog.settings import EE_AVAILABLE
 
-from ee.api.quota_limits import QuotaLimitsViewSet
-from ee.api.vercel import vercel_installation, vercel_product, vercel_proxy, vercel_resource
-
 from ..session_recordings.session_recording_api import SessionRecordingViewSet
 from ..session_recordings.session_recording_external_reference_api import SessionRecordingExternalReferenceViewSet
 from ..session_recordings.session_recording_playlist_api import SessionRecordingPlaylistViewSet
@@ -122,13 +119,6 @@ projects_router.register(
 
 # Seats (proxied to billing service)
 
-# Quota limits (project-scoped — backs the LLM gateway's QuotaResolver)
-projects_router.register(
-    r"quota_limits",
-    QuotaLimitsViewSet,
-    "project_quota_limits",
-    ["team_id"],
-)
 # Self-driving turns products ON (via the `products-enable` MCP tool) before enabling their
 # signal sources. Gated by the narrow `product_enablement` scope, never `project:write`.
 projects_router.register(
@@ -455,27 +445,6 @@ if EE_AVAILABLE:
     )
     projects_router.register(r"persons", EnterprisePersonViewSet, "project_persons", ["team_id"])
     router.register(r"person", LegacyEnterprisePersonViewSet, "persons")
-    vercel_installations_router = router.register(
-        r"vercel/v1/installations",
-        vercel_installation.VercelInstallationViewSet,
-        "vercel_installations",
-    )
-    vercel_installations_router.register(
-        r"resources",
-        vercel_resource.VercelResourceViewSet,
-        "vercel_installation_resources",
-        ["installation_id"],
-    )
-    router.register(
-        r"vercel/v1/products",
-        vercel_product.VercelProductViewSet,
-        "vercel_products",
-    )
-    router.register(
-        r"vercel/proxy",
-        vercel_proxy.VercelProxyViewSet,
-        "vercel_proxy",
-    )
 
 else:
     projects_router.register(r"persons", PersonViewSet, "project_persons", ["team_id"])
