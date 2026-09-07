@@ -11,12 +11,11 @@ from posthog.hogql.constants import HogQLQuerySettings
 from posthog.hogql.parser import parse_expr, parse_select
 
 from posthog.hogql_queries.utils.breakdowns import NOT_IN_COHORT_ID
-from posthog.hogql_queries.utils.query_date_range import QueryDateRange
 from posthog.hogql_queries.utils.sampling import correct_result_for_sampling
 from posthog.hogql_queries.utils.timestamp_utils import format_label_date, get_earliest_timestamp_unfiltered
 from posthog.hogql_queries.utils.utils import get_start_of_interval_hogql, get_start_of_interval_hogql_str
 from posthog.interval_specs import get_interval_func
-from posthog.utils import DATERANGE_MAP, relative_date_parse
+from posthog.utils import relative_date_parse
 
 from products.product_analytics.backend.hogql_queries.funnels.base import JOIN_ALGOS, FunnelBase
 from products.product_analytics.backend.hogql_queries.funnels.funnel import FunnelUDF, FunnelUDFMixin

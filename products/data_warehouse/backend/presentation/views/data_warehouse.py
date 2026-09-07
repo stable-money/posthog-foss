@@ -3,7 +3,7 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from django.db import connection
-from django.db.models import Count, OuterRef, Q, Subquery, Sum
+from django.db.models import Count, OuterRef, Q, Subquery
 from django.db.models.functions import TruncDate, TruncHour
 
 import structlog

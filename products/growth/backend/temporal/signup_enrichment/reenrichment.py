@@ -35,7 +35,6 @@ import dataclasses
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
 
-from posthog.exceptions_capture import capture_exception
 from posthog.ph_client import get_regional_ph_client, ph_scoped_capture
 from posthog.temporal.common.base import PostHogWorkflow
 from posthog.temporal.common.logger import get_logger
@@ -221,8 +220,6 @@ async def reenrich_organization_activity(inputs: ReenrichOrgInputs) -> dict[str,
     from posthog.models.instance_setting import get_instance_setting  # noqa: PLC0415
     from posthog.models.organization import Organization  # noqa: PLC0415
 
-    from products.growth.backend.enrichment.core import enrich_organization  # noqa: PLC0415
-    from products.growth.backend.enrichment.providers import HarmonicEnrichmentProvider  # noqa: PLC0415
     from products.growth.backend.enrichment.writer import merge_into_record  # noqa: PLC0415
     from products.growth.backend.models import OrganizationEnrichmentFetch  # noqa: PLC0415
 
@@ -275,38 +272,6 @@ async def reenrich_organization_activity(inputs: ReenrichOrgInputs) -> dict[str,
     if pha_client is None:
         logger.error("icp_reenrichment_no_regional_client")
         return {"matched": False}
-
-    try:
-        outcome = await enrich_organization(
-            organization_id=inputs.organization_id,
-            domain=inputs.domain,
-            provider=HarmonicEnrichmentProvider(),
-            pha_client=pha_client,
-            is_recheck=True,
-            role_at_organization=inputs.role_at_organization,
-            distinct_id=inputs.distinct_id,
-        )
-        matched = outcome.provider_fields is not None
-        status = outcome.fit.status if outcome.fit else None
-        pha_client.capture(
-            distinct_id=inputs.distinct_id,
-            event=REENRICHMENT_EVENT,
-            properties={
-                "organization_id": inputs.organization_id,
-                "matched": matched,
-                "icp_fit_status": status,
-                "harmonic_enrichment_status": outcome.enrichment_status,
-                **observed,
-            },
-            groups={"organization": inputs.organization_id},
-        )
-        logger.info("icp_reenrichment_completed", matched=matched, icp_fit_status=status, **observed)
-        return {"matched": matched, "icp_fit_status": status, **observed}
-    except Exception as e:
-        capture_exception(e)
-        raise
-    finally:
-        pha_client.shutdown()
 
 
 @dataclasses.dataclass(frozen=True)

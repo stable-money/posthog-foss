@@ -66,7 +66,7 @@ def restore_upstream_palette(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    dependencies = [("posthog", "1340_drop_userproductlist_reason_columns")]
+    dependencies = [("posthog", "1342_drop_cimd_blocklist_table")]
 
     operations = [
         migrations.RunPython(apply_stablemoney_palette, restore_upstream_palette),
