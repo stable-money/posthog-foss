@@ -26,9 +26,8 @@ from posthog.models.personal_api_key import PersonalAPIKey
 from posthog.models.utils import LowercaseSlugField, UUIDTModel, create_with_slug, sane_repr
 
 if TYPE_CHECKING:
-    from posthog.models import Team, User
 
-    from ee.billing.quota_limiting import QuotaResource
+    from posthog.models import Team, User
 
 
 logger = structlog.get_logger(__name__)
@@ -447,143 +446,14 @@ class Organization(ModelActivityMixin, UUIDTModel):
             return "enterprise"
         return "paid"
 
-    def limit_product_until_end_of_billing_cycle(self, resource: "QuotaResource") -> None:
-        """
-        Limit a resource for all teams of this organization until the end of the current billing cycle.
-        Updates the organization's usage data with the quota_limited_until timestamp.
-        """
-        from ee.billing.quota_limiting import (
-            QuotaLimitingCaches,
-            QuotaResource,
-            add_limited_team_tokens,
-            dispatch_recordings_remote_config_sync,
-            update_organization_usage_fields,
-        )
-
-        billing_period = self.current_billing_period
-
-        if billing_period:
-            billing_period_end_timestamp = int(billing_period.end.timestamp())
-
-            team_rows = [
-                (team_id, api_token) for team_id, api_token in self.teams.values_list("id", "api_token") if api_token
-            ]
-            team_tokens: dict[str, int] = {api_token: billing_period_end_timestamp for _, api_token in team_rows}
-            add_limited_team_tokens(resource, team_tokens, QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY)
-
-            update_organization_usage_fields(
-                self,
-                resource,
-                {"quota_limited_until": billing_period_end_timestamp, "quota_limiting_suspended_until": None},
-            )
-
-            if resource == QuotaResource.RECORDINGS:
-                dispatch_recordings_remote_config_sync(team_id for team_id, _ in team_rows)
-        else:
-            raise RuntimeError("Cannot limit without having a billing period")
-
-    def unlimit_product(self, resource: "QuotaResource") -> None:
-        """
-        Remove limiting for a resource for all teams of this organization.
-        Removes teams from the limiting cache and clears quota_limited_until from usage data.
-        """
-        from ee.billing.quota_limiting import (
-            QuotaLimitingCaches,
-            QuotaResource,
-            dispatch_recordings_remote_config_sync,
-            remove_limited_team_tokens,
-            update_organization_usage_fields,
-        )
-
-        team_rows = [
-            (team_id, api_token) for team_id, api_token in self.teams.values_list("id", "api_token") if api_token
-        ]
-        remove_limited_team_tokens(
-            resource, [api_token for _, api_token in team_rows], QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY
-        )
-
-        if self.usage and resource.value in self.usage:
-            update_organization_usage_fields(
-                self, resource, {"quota_limited_until": None, "quota_limiting_suspended_until": None}
-            )
-
-        if resource == QuotaResource.RECORDINGS:
-            dispatch_recordings_remote_config_sync(team_id for team_id, _ in team_rows)
-
     def get_limited_products(self) -> dict[str, dict[str, Any]]:
+        """Products currently quota-limited for this organization.
+
+        Always empty here. Limits were read from a Redis set written only by the billing
+        cron in the enterprise code this build does not contain, so no product could be
+        marked limited.
         """
-        Returns information about which products are currently limited for this organization.
-
-        Uses Redis pipelining to efficiently check all team tokens for all resources in a single batch.
-        Returns both Redis state (source of truth) and usage field data (which may be out of sync).
-
-        Returns a dict mapping resource names to their limiting status:
-        {
-            "events": {
-                "is_limited_in_redis": True,
-                "redis_quota_limited_until": 1234567890,
-                "limited_teams": ["team_token_1", "team_token_2"],
-                "usage_quota_limited_until": 1234567890,
-                "usage_quota_limiting_suspended_until": None
-            },
-            "recordings": {
-                "is_limited_in_redis": False,
-                "redis_quota_limited_until": None,
-                "limited_teams": [],
-                "usage_quota_limited_until": None,
-                "usage_quota_limiting_suspended_until": None
-            },
-            ...
-        }
-        """
-        from ee.billing.quota_limiting import QuotaLimitingCaches, QuotaResource, get_client
-
-        team_tokens = [t for t in self.teams.values_list("api_token", flat=True) if t]
-
-        result: dict[str, dict[str, Any]] = {}
-        for resource in QuotaResource:
-            usage_quota_limited_until = None
-            usage_quota_limiting_suspended_until = None
-
-            if self.usage and resource.value in self.usage:
-                resource_usage = self.usage[resource.value]
-                usage_quota_limited_until = resource_usage.get("quota_limited_until")
-                usage_quota_limiting_suspended_until = resource_usage.get("quota_limiting_suspended_until")
-
-            result[resource.value] = {
-                "is_limited_in_redis": False,
-                "redis_quota_limited_until": None,
-                "limited_teams": [],
-                "usage_quota_limited_until": usage_quota_limited_until,
-                "usage_quota_limiting_suspended_until": usage_quota_limiting_suspended_until,
-            }
-
-        if not team_tokens:
-            return result
-
-        redis_client = get_client()
-        now = timezone.now().timestamp()
-
-        pipe = redis_client.pipeline()
-        checks: list[tuple[QuotaResource, str]] = []
-
-        for resource in QuotaResource:
-            cache_key = f"{QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY.value}{resource.value}"
-            for token in team_tokens:
-                pipe.zscore(cache_key, token)
-                checks.append((resource, token))
-
-        scores = pipe.execute()
-
-        for (resource, token), score in zip(checks, scores):
-            if score is not None and score >= now:
-                result[resource.value]["is_limited_in_redis"] = True
-                result[resource.value]["limited_teams"].append(token)
-                current_max = result[resource.value]["redis_quota_limited_until"]
-                if current_max is None or score > current_max:
-                    result[resource.value]["redis_quota_limited_until"] = int(score)
-
-        return result
+        return {}
 
     @property
     def current_billing_period(self) -> BillingPeriod | None:
@@ -638,24 +508,6 @@ def remember_organization_is_active_change(sender, instance: Organization, **kwa
 
     previous_is_active = sender.objects.filter(pk=instance.pk).values_list("is_active", flat=True).first()
     instance._is_active_changed = previous_is_active != instance.is_active
-
-
-@receiver(post_save, sender=Organization)
-def invalidate_llm_gateway_quota_cache_on_active_state_change(sender, instance: Organization, created: bool, **kwargs):
-    if created or not instance._is_active_changed:
-        return
-
-    organization_id = instance.pk
-
-    def _invalidate_cache():
-        from posthog.models.team import Team
-
-        from ee.billing.quota_limiting import invalidate_llm_gateway_quota_cache
-
-        team_ids = list(Team.objects.filter(organization_id=organization_id).values_list("id", flat=True))
-        invalidate_llm_gateway_quota_cache(team_ids)
-
-    transaction.on_commit(_invalidate_cache)
 
 
 class OrganizationMembership(ModelActivityMixin, UUIDTModel):

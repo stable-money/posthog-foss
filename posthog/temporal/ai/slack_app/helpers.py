@@ -27,26 +27,10 @@ def block_if_team_over_quota(
     ``ee.billing``. Returns True when the team was blocked and a denial was
     posted.
     """
-    from products.slack_app.backend.api import post_quota_exhausted_denial
-
-    from ee.billing.quota_limiting import QuotaLimitingCaches, QuotaResource, is_team_limited
-
-    if not is_team_limited(
-        integration.team.api_token,
-        QuotaResource.AI_CREDITS,
-        QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY,
-    ):
-        return False
-
-    post_quota_exhausted_denial(
-        integration=integration,
-        slack=slack,
-        channel=channel,
-        thread_ts=thread_ts,
-        slack_user_id=slack_user_id,
-        context=context,
-    )
-    return True
+    # No team can be over an AI-credits quota in this build, so the turn is never
+    # refused and the denial message is never posted. The quota lookup read a Redis set
+    # written only by the billing cron in the enterprise code this build does not have.
+    return False
 
 
 # Reaction errors that should never abort a follow-up activity — the 👀/🔍 reaction is purely

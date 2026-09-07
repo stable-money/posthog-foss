@@ -12,7 +12,6 @@ from django.utils.translation import gettext_lazy as _
 from django_deprecate_fields import deprecate_field
 from rest_framework.exceptions import ValidationError
 
-from posthog.cloud_utils import get_cached_instance_license, is_cloud
 from posthog.constants import AvailableFeature
 from posthog.exceptions_capture import capture_exception
 from posthog.helpers.email_utils import STRIPPED_EMAIL_EXPRESSION, EmailLookupHandler, EmailNormalizer
@@ -622,10 +621,9 @@ class User(AbstractUser, UUIDTClassicModel, ModelActivityMixin):  # type: ignore
                 self.save()
 
     def update_billing_organization_users(self, organization: Organization) -> None:
-        from ee.billing.billing_manager import BillingManager  # avoid circular import
-
-        if is_cloud() and get_cached_instance_license() is not None:
-            BillingManager(get_cached_instance_license(), self).update_billing_organization_users(organization)
+        # Nothing to push: the billing service and the instance licence it authenticates
+        # with are both part of the enterprise code this build does not contain.
+        return
 
     def get_analytics_metadata(self):
         team_member_count_all: int = (

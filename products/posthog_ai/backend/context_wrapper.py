@@ -13,11 +13,8 @@ NOT deprecated: `abuild_resumed_legacy_context` (the conversation migration serv
 """
 
 import json
-import time
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, get_args
-
-import posthoganalytics
 
 if TYPE_CHECKING:
     from posthog.models import Team, User
@@ -161,43 +158,11 @@ class ContextService:
         `ee/hogai/core/agent_modes/executables.py`). Returns None when there's no readable state or
         no renderable turns, so the caller just forwards the user's message without an empty block.
         """
-        # Deferred: keeps the LangGraph graph-compile + compaction (heavy) off the sandbox
-        # message-routing import path — only the conversion event pays for them.
-        from ee.hogai.api.serializers import (
-            aget_conversation_state,  # noqa: PLC0415 — keeps LangGraph off the sandbox import path
-        )
-        from ee.hogai.core.agent_modes.compaction_manager import (  # noqa: PLC0415 — heavy compaction dep
-            AnthropicConversationCompactionManager,
-        )
-        from ee.hogai.utils.types import AssistantState  # noqa: PLC0415 — keeps LangGraph off the sandbox import path
-
-        started_at = time.monotonic()
-        state_result = await aget_conversation_state(conversation, team, user)
-        # Legacy conversions are assistant conversations (see CONVERSATION_TYPE_MAP); the broad
-        # AssistantMaxGraphState union also admits TaxonomyAgentState, which carries no window anchor.
-        if not isinstance(state_result.state, AssistantState):
-            return None
-
-        window = AnthropicConversationCompactionManager().get_messages_in_window(
-            state_result.state.messages, state_result.state.root_conversation_start_id
-        )
-        transcript = self._render_legacy_transcript(window)
-
-        posthoganalytics.capture(
-            distinct_id=str(user.distinct_id),
-            event="phai_legacy_conversion",
-            properties={
-                "conversation_id": str(conversation.id),
-                "messages_total": len(state_result.state.messages),
-                "window_messages": len(window),
-                "duration_ms": int((time.monotonic() - started_at) * 1000),
-            },
-            groups={"organization": str(team.organization_id)},
-        )
-
-        if not transcript:
-            return None
-        return f"<posthog_context>{RESUMED_CONTEXT_PREFIX}\n{transcript}</posthog_context>"
+        # Reading a legacy conversation's state needs the LangGraph serializer and the
+        # compaction manager, both part of the enterprise code this build does not
+        # contain. None is this method's documented "nothing renderable" answer, so the
+        # caller forwards the user's message without a context block.
+        return None
 
     def _render_legacy_transcript(self, messages: Sequence[Any]) -> str:
         """Render windowed legacy messages to a plain-text transcript for the resumed prompt.

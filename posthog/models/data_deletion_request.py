@@ -828,8 +828,6 @@ def discover_affected_mat_columns(properties: list[str], table_column: str) -> l
     from posthog.clickhouse.client import sync_execute
     from posthog.clickhouse.client.connection import ClickHouseUser
 
-    from ee.clickhouse.materialized_columns.columns import MaterializedColumnDetails
-
     rows = sync_execute(
         """
         SELECT name, comment, type LIKE 'Nullable(%%)'
@@ -846,10 +844,24 @@ def discover_affected_mat_columns(properties: list[str], table_column: str) -> l
     target = set(properties)
     result: list[tuple[str, bool]] = []
     for name, comment, is_nullable in rows:
-        details = MaterializedColumnDetails.from_column_comment(comment)
-        if details.table_column == table_column and details.property_name in target:
+        comment_table_column, property_name = _parse_materializer_comment(comment)
+        if comment_table_column == table_column and property_name in target:
             result.append((name, bool(is_nullable)))
     return result
+
+
+def _parse_materializer_comment(comment: str) -> tuple[str, str]:
+    """Read the table column and property name out of a materializer column comment.
+
+    The convention is ``column_materializer::<table_column>::<property_name>``, and the
+    query above excludes the two-part ``elements_chain`` family. An unrecognized comment
+    raises rather than being skipped: this drives a deletion request, so dropping a column
+    from the result would leave deleted properties in place.
+    """
+    parts = comment.split("::")
+    if len(parts) != 3 or parts[0] != "column_materializer":
+        raise ValueError(f"Unrecognized materialized column comment: {comment!r}")
+    return parts[1], parts[2]
 
 
 def _property_presence_where(

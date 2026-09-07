@@ -10,7 +10,6 @@ from rest_framework.response import Response
 
 from posthog.api.routing import TeamAndOrgViewSetMixin
 from posthog.api.shared import UserBasicSerializer
-from posthog.exceptions_capture import capture_exception
 from posthog.models.integration import Integration
 from posthog.models.organization_integration import OrganizationIntegration
 from posthog.permissions import OrganizationAdminWritePermissions
@@ -87,40 +86,9 @@ class OrganizationIntegrationViewSet(
         return super().destroy(request, *args, **kwargs)
 
     def perform_destroy(self, instance: OrganizationIntegration) -> None:
-        is_marketplace = instance.config.get("type") != "connectable"
-
-        if is_marketplace and instance.integration_id:
-            from ee.billing.billing_manager import BillingServiceOpenInvoicesError
-            from ee.vercel.integration import VercelIntegration
-
-            try:
-                VercelIntegration.delete_installation(instance.integration_id)
-            except BillingServiceOpenInvoicesError as e:
-                # Expected business condition, not a crash: billing blocks deauthorization while
-                # invoices are unpaid. Mirror the marketplace DELETE API (409) so the UI disconnect
-                # can't sidestep the guard, and abort the local delete instead of capturing an error.
-                logger.warning(
-                    "organization_integration.delete_installation_blocked_by_open_invoices",
-                    organization_id=str(instance.organization_id),
-                    integration_id=instance.integration_id,
-                    reason=e.message,
-                )
-                raise OpenInvoicesError(detail=e.message)
-            except Exception as e:
-                capture_exception(
-                    e,
-                    {
-                        "organization_id": str(instance.organization_id),
-                        "integration_id": instance.integration_id,
-                    },
-                )
-                logger.warning(
-                    "organization_integration.delete_installation_failed",
-                    organization_id=str(instance.organization_id),
-                    integration_id=instance.integration_id,
-                    error=str(e),
-                )
-
+        # A marketplace installation can only be created by the Vercel integration in the
+        # enterprise tree, which this build does not contain, so there is never a remote
+        # installation to delete here. Local rows are still cleaned up below.
         team_integrations_deleted, _ = Integration.objects.filter(
             team__organization=instance.organization,
             kind=Integration.IntegrationKind.VERCEL,
@@ -160,8 +128,6 @@ class OrganizationIntegrationViewSet(
 
         from posthog.models.integration import Integration as TeamIntegration
 
-        from ee.vercel.client import VercelAPIClient
-
         teams_by_id: dict[int, Team] = {}
         resources: dict[int, TeamIntegration] = {}
         for tid in {production_id, preview_id, development_id}:
@@ -180,25 +146,8 @@ class OrganizationIntegrationViewSet(
         }
         integration.save(update_fields=["config"])
 
-        production_team = teams_by_id[production_id]
-        production_resource = resources[production_id]
-
-        access_token = integration.sensitive_config.get("credentials", {}).get(
-            "access_token"
-        ) or integration.config.get("credentials", {}).get("access_token")
-        if access_token and integration.integration_id:
-            from ee.api.vercel.vercel_connect import VercelConnectLinkViewSet
-
-            secrets = VercelConnectLinkViewSet._build_env_secrets(
-                teams_by_id, production_id, preview_id, development_id
-            )
-            client = VercelAPIClient(bearer_token=access_token)
-            client.import_resource(
-                integration_config_id=integration.integration_id,
-                resource_id=str(production_resource.pk),
-                product_id="posthog",
-                name=production_team.name,
-                secrets=secrets,
-            )
+        # The mapping is stored above. Pushing it to Vercel needs the enterprise Vercel
+        # client, which this build does not contain, so nothing is sent upstream and the
+        # access token, production team and production resource are not read.
 
         return Response(OrganizationIntegrationSerializer(integration).data)

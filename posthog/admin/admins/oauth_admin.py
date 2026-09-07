@@ -41,13 +41,10 @@ def _provisioning_form_fields() -> dict[str, forms.Field]:
 def _rate_limit_endpoints() -> list[str]:
     """Every declared rate-limit endpoint, so a new @rate_limited declaration
     grows an override field here with no admin change."""
-    # Deferred: budgets register when the provisioning view modules import, and this
-    # admin module loads at django.setup() in every process, where pulling the ee
-    # views in eagerly would bloat startup.
-    from ee.api.agentic_provisioning import views  # noqa: F401, PLC0415
-    from ee.api.agentic_provisioning.ratelimits import registered_budgets  # noqa: PLC0415
-
-    return sorted(registered_budgets())
+    # Rate-limit budgets are declared by the agentic provisioning views, which are part of
+    # the enterprise tree this build does not contain. Nothing registers a budget, so the
+    # admin shows no override fields.
+    return []
 
 
 def _rate_limit_form_fields() -> dict[str, forms.Field]:

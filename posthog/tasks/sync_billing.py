@@ -25,13 +25,6 @@ def sync_members_to_billing(organization_id: str) -> None:
 @shared_task(ignore_result=True, rate_limit="5/s")
 @skip_team_scope_audit
 def sync_from_billing(organization_id: str) -> None:
-    from posthog.cloud_utils import get_cached_instance_license
-    from posthog.models import Organization
-
-    from ee.billing.billing_manager import BillingManager
-
-    license = get_cached_instance_license()
-    billing_manager = BillingManager(license, None)
-
-    organization = Organization.objects.get(id=organization_id)
-    billing_manager.get_billing(organization, {})
+    # There is no billing service to sync from in this build. The task stays registered so
+    # its celery name survives for anything that still enqueues it.
+    return

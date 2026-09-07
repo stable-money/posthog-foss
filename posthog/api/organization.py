@@ -23,7 +23,7 @@ from posthog.caching.organization_serializer_cache import (
     ORG_SERIALIZER_CACHE_TTL_SECONDS,
     _org_serializer_cache_version,
 )
-from posthog.cloud_utils import get_cached_instance_license, is_cloud
+from posthog.cloud_utils import is_cloud
 from posthog.constants import INTERNAL_BOT_EMAIL_SUFFIX, AvailableFeature
 from posthog.data_freshness import LOOKBACK_DAYS, QUIET_AFTER_DAYS, Freshness, get_organization_data_freshness
 from posthog.event_usage import (
@@ -552,7 +552,6 @@ class OrganizationViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
         return get_object_or_404(queryset, **filter_kwargs)
 
     def perform_destroy(self, organization: Organization):
-        from ee.billing.billing_manager import BillingManager
 
         # Check if bulk deletion operations are disabled via environment variable
         # Organizations contain teams, so we need to block organization deletion too
@@ -561,17 +560,8 @@ class OrganizationViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
                 "Organization deletion is temporarily disabled during database migration. Please try again later."
             )
 
-        # Check if organization has an active billing subscription
-        if is_cloud():
-            license = get_cached_instance_license()
-            if license:
-                billing_manager = BillingManager(license)
-                billing = billing_manager.get_billing(organization)
-                if billing.get("has_active_subscription"):
-                    raise exceptions.ValidationError(
-                        "Cannot delete organization with an active subscription. "
-                        "Please cancel your subscription first in the billing page."
-                    )
+        # No subscription check: it needed an instance licence and the billing service,
+        # neither of which exists in this build, so the branch could never raise.
 
         if organization.is_pending_deletion:
             raise exceptions.ValidationError("This organization is already being deleted.")

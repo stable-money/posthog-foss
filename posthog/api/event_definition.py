@@ -111,14 +111,10 @@ def create_event_definitions_sql(
 ) -> str:
     if order_expressions is None:
         order_expressions = []
-    if is_enterprise:
-        from ee.models import EnterpriseEventDefinition
-
-        ee_model = EnterpriseEventDefinition
-    else:
-        # telling mypy to ignore this...
-        # it's fine to assign EventDefinition
-        ee_model = EventDefinition  # type: ignore
+    # There is no enterprise event definition model in this build, so the plain model is
+    # used whatever the caller asks for. The only caller passes is_enterprise=EE_AVAILABLE,
+    # which this build never sets.
+    ee_model = EventDefinition
 
     event_definition_fields = {
         f'"{f.column}"'

@@ -56,7 +56,6 @@ from posthog.api.team import (
 )
 from posthog.api.utils import validate_authorized_url_wildcards
 from posthog.auth import SessionAuthentication
-from posthog.cloud_utils import get_cached_instance_license, is_cloud
 from posthog.constants import AvailableFeature
 from posthog.decorators import disallow_if_impersonated
 from posthog.event_usage import report_user_action
@@ -1563,7 +1562,6 @@ class ProjectViewSet(
         return project.teams.get(id=project.id)
 
     def perform_destroy(self, project: Project):
-        from ee.billing.billing_manager import BillingManager
 
         # Check if bulk deletion operations are disabled via environment variable
         # Projects contain teams, so we need to block project deletion too
@@ -1578,17 +1576,9 @@ class ProjectViewSet(
         # Block deletion of the last project in an org with an active subscription (cloud only).
         # Fail open if the billing service is unreachable — a 500 here would create a worse stuck state.
         is_last_project = project.organization.projects.count() == 1
-        license = get_cached_instance_license()
-        try:
-            has_active_subscription = (
-                settings.EE_AVAILABLE
-                and is_cloud()
-                and license
-                and BillingManager(license).get_billing(project.organization).get("has_active_subscription")
-            )
-        except Exception:
-            logger.exception("Failed to check billing status before project deletion; allowing deletion to proceed")
-            has_active_subscription = False
+        # Always False here: the check began with settings.EE_AVAILABLE, which this build
+        # never sets, so it already short-circuited and allowed the deletion.
+        has_active_subscription = False
 
         if is_last_project and has_active_subscription:
             raise exceptions.ValidationError(

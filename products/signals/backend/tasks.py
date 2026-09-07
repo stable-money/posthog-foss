@@ -1,5 +1,4 @@
 from datetime import timedelta
-from decimal import Decimal
 
 from django.core.cache import cache
 from django.db import OperationalError
@@ -11,17 +10,14 @@ from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
 from slack_sdk.errors import SlackApiError
 
-from posthog.cloud_utils import get_cached_instance_license
 from posthog.egress.github.transport import GitHubEgressBudgetExhausted, GitHubRateLimitError
 from posthog.event_usage import groups
 from posthog.exceptions_capture import capture_exception
 from posthog.models import Team
-from posthog.models.organization import BillingPeriod
 from posthog.models.scoping import with_team_scope
 from posthog.ph_client import ph_scoped_capture
 from posthog.scoping_audit import skip_team_scope_audit
 
-from products.signals.backend.billing import current_billing_period_bounds
 from products.signals.backend.implementation_pr import PrCloseReason, close_implementation_pr_for_report
 from products.signals.backend.models import (
     SignalReport,
@@ -346,114 +342,15 @@ def _capture_refund_sync_event(refund: SignalReportRefund, event: str, extra: di
 )
 @skip_team_scope_audit
 def sync_signals_refund_credit(self, refund_id: str) -> None:
-    """Report a credited-path refund to the billing dispute endpoint and record the outcome.
+    """Report a credited-path refund to the billing dispute endpoint.
 
-    Safe to re-deliver at any time (double-enqueue, sweeper overlap, manual re-run): billing is
-    idempotent on `refund_id`, and an already-synced row returns immediately. User experience is
-    unaffected while this lags — archive + badge + freed quota slot all happened at refund time;
-    only the invoice credit waits.
+    Does nothing in this build. The dispute endpoint is reached through BillingManager,
+    which is part of the enterprise code this tree does not contain. The refund row is
+    deliberately left unsynced rather than stamped as synced, so nothing records an
+    invoice credit that was never actually made.
     """
-    from ee.billing.billing_manager import (
-        BillingManager,  # noqa: PLC0415 — keeps the ee layer off the products import path (precedent: posthog/tasks/sync_billing.py)
-    )
-
-    refund = (
-        # nosemgrep: idor-lookup-without-team (system Celery task keyed by refund id from our own enqueue/sweeper, no user input; unscoped is the sanctioned cross-team access)
-        SignalReportRefund.objects.unscoped()
-        .select_related("team__organization")
-        .filter(id=refund_id, billing_path=SignalReportRefund.BillingPath.CREDITED)
-        .first()
-    )
-    if refund is None:
-        logger.warning("signals refund credit sync: no credited refund found", refund_id=refund_id)
-        return
-    if refund.billing_synced_at is not None:
-        return
-
-    organization = refund.team.organization
-    # Report the period bounds frozen at refund acceptance, so billing credits against the
-    # period the refund was accepted in even when this sync lands after rollover — recomputing
-    # bounds here is exactly the drift that loses the credit. The fallback covers rows created
-    # before the bounds were snapshotted.
-    if refund.period_start is not None and refund.period_end is not None:
-        period = BillingPeriod(start=refund.period_start, end=refund.period_end)
-    else:
-        period = current_billing_period_bounds(organization)
-    payload = {
-        "refund_id": str(refund.id),
-        "credits": refund.credits,
-        "metadata": {
-            "team_id": refund.team_id,
-            "report_id": str(refund.report_id),
-            "pr_url": refund.pr_url,
-            "pr_run_created_at": refund.pr_run_created_at.isoformat(),
-            "period_start": period.start.isoformat(),
-            "period_end": period.end.isoformat(),
-        },
-    }
-
-    try:
-        license = get_cached_instance_license()
-        response = BillingManager(license, None).dispute_signals_pr(organization, payload)
-        credit_amount_usd = Decimal(str(response["credit_amount_usd"]))
-    except Exception as exc:
-        if self.request.retries < _REFUND_SYNC_MAX_RETRIES:
-            countdown = min(_REFUND_SYNC_RETRY_BASE_SECONDS * (2**self.request.retries), _REFUND_SYNC_RETRY_MAX_SECONDS)
-            raise self.retry(exc=exc, countdown=countdown)
-        # Terminal for this delivery — record the error for the weekly review; the hourly sweeper
-        # keeps re-enqueueing the row for up to 7 days, after which recovery is operational. The
-        # conditional update mirrors the success-path claim below: never stamp an error (or emit
-        # the failed event) onto a row a concurrent delivery already synced.
-        recorded = (
-            # nosemgrep: idor-lookup-without-team (id comes from the sanctioned unscoped lookup above; system task, no user input)
-            SignalReportRefund.objects.unscoped()
-            .filter(id=refund.id, billing_synced_at__isnull=True)
-            .update(billing_sync_error=str(exc)[:4000])
-        )
-        if recorded:
-            capture_exception(exc, {"refund_id": str(refund.id), "team_id": refund.team_id})
-            _capture_refund_sync_event(refund, "signals_pr_refund_credit_failed", {"error": str(exc)[:1000]})
-        return
-
-    if response.get("zero_reason") == "out_of_period":
-        # The $0 means billing could no longer credit the frozen refund period (see
-        # _OUT_OF_PERIOD_SYNC_ERROR), not that the refund was legitimately free. Record a sync
-        # error instead of a synced $0 so the row surfaces for manual recovery.
-        recorded = (
-            # nosemgrep: idor-lookup-without-team (id comes from the sanctioned unscoped lookup above; system task, no user input)
-            SignalReportRefund.objects.unscoped()
-            .filter(id=refund.id, billing_synced_at__isnull=True)
-            .update(billing_sync_error=_OUT_OF_PERIOD_SYNC_ERROR)
-        )
-        if recorded:
-            capture_exception(
-                Exception("signals refund credit lost to billing period rollover"),
-                {"refund_id": str(refund.id), "team_id": refund.team_id},
-            )
-            _capture_refund_sync_event(refund, "signals_pr_refund_credit_failed", {"error": _OUT_OF_PERIOD_SYNC_ERROR})
-        return
-
-    # Atomic claim: the on-commit enqueue and the hourly sweeper can race two deliveries for the
-    # same refund past the billing_synced_at gate above while the billing call is in flight
-    # (billing stays idempotent, so the credit itself is issued once). Only the delivery that
-    # flips the row records the sync and emits the issued event, keeping the weekly-review
-    # analytics single-counted.
-    claimed = (
-        # nosemgrep: idor-lookup-without-team (id comes from the sanctioned unscoped lookup above; system task, no user input)
-        SignalReportRefund.objects.unscoped()
-        .filter(id=refund.id, billing_synced_at__isnull=True)
-        .update(credit_amount_usd=credit_amount_usd, billing_synced_at=timezone.now(), billing_sync_error=None)
-    )
-    if not claimed:
-        return
-    _capture_refund_sync_event(
-        refund,
-        "signals_pr_refund_credit_issued",
-        {
-            "credit_amount_usd": str(credit_amount_usd),
-            "already_processed": bool(response.get("already_processed")),
-        },
-    )
+    logger.warning("signals refund credit sync: no billing service in this build", refund_id=refund_id)
+    return
 
 
 @shared_task(

@@ -6,7 +6,6 @@ metadata) or the local `aggregator` / `storage` modules. Heavy logic lives
 elsewhere so these stay easy to read and mock in tests.
 """
 
-import json
 import time
 import asyncio
 from itertools import batched
@@ -242,21 +241,11 @@ async def enqueue_pointer_message(inputs: EnqueuePointerInputs) -> None:
 
         @sync_to_async
         def send() -> None:
-            from ee.sqs.SQSProducer import get_sqs_producer
-
-            producer = get_sqs_producer(SQS_QUEUE_NAME)
-            if producer is None:
-                raise RuntimeError(f"SQS producer for queue '{SQS_QUEUE_NAME}' is not configured")
-            response = producer.send_message(
-                message_body=json.dumps(pointer, separators=(",", ":")),
-                message_attributes={
-                    "content_type": "application/json",
-                    "schema_version": str(SQS_POINTER_VERSION),
-                    "run_id": inputs.ctx.run_id,
-                },
-            )
-            if response is None:
-                raise RuntimeError("SQS send_message returned no response")
+            # The pointer is read off SQS by the billing service. This build has neither the
+            # SQS producer nor a billing service, so there is nowhere to send it and nothing
+            # downstream waiting for it. Returning rather than raising keeps the activity
+            # from retrying forever against a queue that will never exist here.
+            return
 
         await send()
         # Best-effort from here down: the pointer is already delivered, so a

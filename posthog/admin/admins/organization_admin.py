@@ -573,45 +573,6 @@ class OrganizationAdmin(admin.ModelAdmin):
 
         return redirect(reverse("admin:posthog_organization_change", args=[organization_id]))
 
-    def limit_product_view(self, request, organization_id):
-        from ee.billing.quota_limiting import QuotaResource
-
-        organization: Organization = Organization.objects.get(id=organization_id)
-        assert organization
-
-        if request.method == "POST":
-            resource_name = request.POST.get("resource")
-            try:
-                resource = QuotaResource(resource_name)
-                organization.limit_product_until_end_of_billing_cycle(resource)
-                messages.success(request, f"Successfully limited {resource_name} for organization {organization.name}")
-            except ValueError:
-                messages.error(request, f"Invalid resource: {resource_name}")
-            except Exception as e:
-                messages.error(request, f"Error limiting {resource_name}: {str(e)}")
-
-        return redirect(reverse("admin:posthog_organization_change", args=[organization_id]))
-
-    def unlimit_product_view(self, request, organization_id):
-        from ee.billing.quota_limiting import QuotaResource
-
-        organization = Organization.objects.get(id=organization_id)
-
-        if request.method == "POST":
-            resource_name = request.POST.get("resource")
-            try:
-                resource = QuotaResource(resource_name)
-                organization.unlimit_product(resource)
-                messages.success(
-                    request, f"Successfully unlimited {resource_name} for organization {organization.name}"
-                )
-            except ValueError:
-                messages.error(request, f"Invalid resource: {resource_name}")
-            except Exception as e:
-                messages.error(request, f"Error unlimiting {resource_name}: {str(e)}")
-
-        return redirect(reverse("admin:posthog_organization_change", args=[organization_id]))
-
     def get_urls(self):
         urls = super().get_urls()
         custom_urls = [
@@ -627,16 +588,6 @@ class OrganizationAdmin(admin.ModelAdmin):
                 "bulk-deactivate/",
                 self.admin_site.admin_view(self.bulk_deactivate_view),
                 name="organization_bulk_deactivate",
-            ),
-            path(
-                "<path:organization_id>/limit-product/",
-                self.admin_site.admin_view(self.limit_product_view),
-                name="limit_product",
-            ),
-            path(
-                "<path:organization_id>/unlimit-product/",
-                self.admin_site.admin_view(self.unlimit_product_view),
-                name="unlimit_product",
             ),
             path(
                 "<path:organization_id>/model-counts/",

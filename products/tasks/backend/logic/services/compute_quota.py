@@ -78,10 +78,7 @@ def is_compute_quota_exhausted(task: Task) -> bool:
 
 
 def _is_posthog_code_quota_limited(team_api_token: str) -> bool:
-    from ee.billing.quota_limiting import QuotaLimitingCaches, QuotaResource, is_team_limited
-
-    return is_team_limited(
-        team_api_token,
-        QuotaResource.POSTHOG_CODE_CREDITS,
-        QuotaLimitingCaches.QUOTA_LIMITER_CACHE_KEY,
-    )
+    # No quota can apply in this build. The lookup read a Redis set written only by the
+    # billing cron in the enterprise code this build does not contain, so it always
+    # reported the team as within budget.
+    return False

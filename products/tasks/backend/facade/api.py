@@ -2599,19 +2599,9 @@ def _refresh_self_driving_quota_for_pr(run: TaskRun, old_pr_url: str | None) -> 
         organization_id = Team.objects.filter(id=run.task.team_id).values_list("organization_id", flat=True).first()
         if organization_id is None:
             return
-        from ee.tasks.quota_limiting import (
-            refresh_org_self_driving_quota_task,  # noqa: PLC0415 — keep billing deps off the api import path
-        )
-
-        def _dispatch() -> None:
-            try:
-                refresh_org_self_driving_quota_task.delay(str(organization_id))
-            except Exception:
-                logger.warning(
-                    "self_driving_quota_refresh_dispatch_failed", extra={"run_id": str(run.id)}, exc_info=True
-                )
-
-        transaction.on_commit(_dispatch)
+        # Nothing to refresh: the self-driving quota is tracked by the billing service,
+        # which this build does not have.
+        return
     except Exception:
         logger.warning("self_driving_quota_refresh_failed", extra={"run_id": str(run.id)}, exc_info=True)
 

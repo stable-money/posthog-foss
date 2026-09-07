@@ -447,11 +447,10 @@ def _check_generation_rate(team_id: int, user_id: int) -> None:
 
 
 def _is_ai_usage_limited(team_api_token: str) -> bool:
-    from ee.billing.quota_limiting import (  # noqa: PLC0415 — keeps the billing query stack off the API import path
-        is_team_over_ai_credit_budget,
-    )
-
-    return is_team_over_ai_credit_budget(team_api_token)
+    # No quota can apply in this build. The lookup read a Redis set written only by the
+    # billing cron in the enterprise code this build does not contain, so it always
+    # reported the team as within budget.
+    return False
 
 
 def is_notebook_widget_enabled(user: User | None) -> bool:

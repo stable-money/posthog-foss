@@ -4678,11 +4678,9 @@ class ExperimentService:
             "recalculation_status": active_recalculation.status if active_recalculation else None,
             "recalculation_created_at": active_recalculation.created_at.isoformat() if active_recalculation else None,
         }
-        from ee.hogai.context.experiment.format import (
-            ExperimentTimeseriesFormatter,  # noqa: PLC0415 — keeps the heavy ee.hogai/langgraph chain off the import path
-        )
-
-        response["formatted_results"] = ExperimentTimeseriesFormatter(response).format()
+        # `formatted_results` is a rendering of the same numbers for Max to read. The
+        # formatter is part of the enterprise code this build does not contain, so the key
+        # is omitted; every other field in the response is unaffected.
         return response
 
     def request_timeseries_recalculation(
