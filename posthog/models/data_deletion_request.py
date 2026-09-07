@@ -850,18 +850,30 @@ def discover_affected_mat_columns(properties: list[str], table_column: str) -> l
     return result
 
 
+DEFAULT_MATERIALIZED_TABLE_COLUMN = "properties"
+
+
 def _parse_materializer_comment(comment: str) -> tuple[str, str]:
     """Read the table column and property name out of a materializer column comment.
 
-    The convention is ``column_materializer::<table_column>::<property_name>``, and the
-    query above excludes the two-part ``elements_chain`` family. An unrecognized comment
-    raises rather than being skipped: this drives a deletion request, so dropping a column
-    from the result would leave deleted properties in place.
+    Three shapes exist in the wild:
+        column_materializer::<property>                          (table column defaults)
+        column_materializer::<table_column>::<property>
+        column_materializer::<table_column>::<property>::disabled
+
+    A disabled column is still returned: it physically exists and still holds values, so a
+    deletion request has to reset it like any other. An unrecognized comment raises rather
+    than being skipped, because dropping a column from the result would silently leave
+    deleted properties in place.
     """
-    parts = comment.split("::")
-    if len(parts) != 3 or parts[0] != "column_materializer":
-        raise ValueError(f"Unrecognized materialized column comment: {comment!r}")
-    return parts[1], parts[2]
+    parts = comment.split("::", 3)
+    if len(parts) == 2 and parts[0] == "column_materializer":
+        return DEFAULT_MATERIALIZED_TABLE_COLUMN, parts[1]
+    if len(parts) in (3, 4) and parts[0] == "column_materializer":
+        if len(parts) == 4 and parts[3] != "disabled":
+            raise ValueError(f"Unrecognized materialized column comment: {comment!r}")
+        return parts[1], parts[2]
+    raise ValueError(f"Unrecognized materialized column comment: {comment!r}")
 
 
 def _property_presence_where(
