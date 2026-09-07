@@ -50,13 +50,25 @@ if EE_AVAILABLE:
 
         return {table: get_enabled_materialized_columns(table) for table in MATERIALIZATION_VALID_TABLES}
 else:
+    # Without the enterprise implementation the columns are still on the cluster and still
+    # correct to use; only the code that found them was missing. The registry reads them
+    # back out of ClickHouse, so property substitution keeps working.
+    from posthog.clickhouse.materialized_columns_registry import (
+        get_enabled_materialized_columns as _discover_enabled_materialized_columns,
+    )
 
     def get_materialized_column_for_property(
         table: TablesWithMaterializedColumns, table_column: TableColumn, property_name: PropertyName
     ) -> MaterializedColumn | None:
-        return None
+        if not get_instance_setting("MATERIALIZED_COLUMNS_ENABLED"):
+            return None
+
+        return _discover_enabled_materialized_columns(table).get((property_name, table_column))
 
     def get_enabled_materialized_columns_by_table() -> Mapping[
         TablesWithMaterializedColumns, Mapping[tuple[PropertyName, TableColumn], MaterializedColumn]
     ]:
-        return {}
+        if not get_instance_setting("MATERIALIZED_COLUMNS_ENABLED"):
+            return {}
+
+        return {table: _discover_enabled_materialized_columns(table) for table in MATERIALIZATION_VALID_TABLES}
