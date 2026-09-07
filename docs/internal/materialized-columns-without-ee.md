@@ -117,22 +117,45 @@ per table, invalidated on write.
 - Disabled columns are absent from the enabled registry, and present in the unfiltered one.
 - A HogQL query filtering on `properties.$session_id` compiles to the physical column, not `JSONExtract`.
 
-## Phase 2 — creation (optional, and probably not by reimplementation)
+## Phase 2 — creation (done)
 
-Do **not** rebuild `materialize()`. Upstream has already written an MIT-side successor: the
-slot mechanism in `posthog/models/materialized_column_slots.py` plus the Temporal
-activities `assign_pending_columns`, `populate_slot_assignments`, `run_batched_mutation`,
-`activate_slots`, `fail_slots`. It manages `dmat_string_*` columns end to end and needs no
-`ee` code.
+Nothing was rebuilt. Upstream already ships an MIT-side successor to `materialize()`: a
+per-team slot mechanism where `dmat_string_<idx>` columns are a pre-created pool and a
+dict resolves `(team_id, slot_index) -> property_name` at read and write time. All of it
+is already in this tree and free of `ee`:
 
-The work here is wiring and enabling that path, plus deciding what selects candidate
-properties. The previous selection policy, for reference, ran weekly and materialized a
-property when, over the preceding 168 hours, its queries either raised an exception or more
-than 9 of them exceeded 40s — capped at 100 columns per run. That policy is a handful of
-lines of judgement over `system.query_log`; it is not the expensive part.
+| Piece | Location |
+|---|---|
+| Slot model and its states | `posthog/models/materialized_column_slots.py` |
+| Request/list API | `posthog/api/materialized_column_slot.py` |
+| Read path | `posthog/hogql/property_metadata.py` |
+| Workflow and activities | `posthog/temporal/backfill_materialized_property/` |
+| Weekly cron builder | `.../schedule.py` (`0 0 * * 0`) |
 
-Phase 1 works standalone. If Phase 2 never happens, the existing 88 columns keep being
-used, and only *new* materialization stops.
+Two gaps stopped it working here, and both are now closed.
+
+**The slot API silently lost its dedup.** `get_auto_materialized_property_names()` and the
+`auto_materialized` endpoint both returned nothing without `ee`, so the API would hand out
+a slot for a property that already had a legacy `mat_` column — materializing it twice by
+two mechanisms. Both now read through `posthog.clickhouse.materialized_columns`, which
+serves whichever registry is present.
+
+**Nothing armed the schedule.** `schedule.py` says to register the cron "from a management
+command or initialization hook", and no such command existed, so requested slots would have
+sat in PENDING forever. `manage.py register_dmat_backfill_schedule` does it, with
+`--dry-run`; it is idempotent.
+
+### What changed about selection
+
+The old `ee` path chose properties itself: weekly, from `system.query_log`, materializing
+anything whose queries errored or where more than 9 exceeded 40s over 168 hours, capped at
+100 per run. The slot path is deliberate instead — a staff user requests a property through
+the API and the weekly workflow allocates, backfills and activates it.
+
+That is a real behavioural change and worth stating plainly: this build no longer tunes
+itself. Nobody chose the 95 columns currently in use; the old analyzer accumulated them.
+Reinstating automatic selection means writing a policy that creates PENDING slots, which is
+a small amount of judgement over `system.query_log` rather than any of the hard machinery.
 
 ## Explicitly out of scope
 

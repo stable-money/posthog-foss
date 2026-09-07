@@ -66,6 +66,9 @@ class DiscoveredMaterializedColumn:
     """
 
     name: ColumnName
+    property_name: PropertyName
+    table_column: TableColumn
+    is_disabled: bool
     is_nullable: bool
     has_minmax_index: bool
     has_bloom_filter_index: bool
@@ -147,6 +150,9 @@ def get_materialized_columns(
 ) -> dict[tuple[PropertyName, TableColumn], DiscoveredMaterializedColumn]:
     """Every materialized column on `table`, including disabled ones.
 
+    Disabled columns are returned so callers can report them; use
+    get_enabled_materialized_columns for the set a query may actually substitute.
+
     Cached, because this sits behind the HogQL compile path and must not issue a query per
     property lookup.
     """
@@ -171,11 +177,14 @@ def get_materialized_columns(
     columns: dict[tuple[PropertyName, TableColumn], DiscoveredMaterializedColumn] = {}
     for name, comment, column_type in rows:
         table_column, property_name, is_disabled = parse_column_comment(comment)
-        if table_column == EXCLUDED_TABLE_COLUMN or is_disabled:
+        if table_column == EXCLUDED_TABLE_COLUMN:
             continue
         flags = index_flags.get(name, dict.fromkeys(_INDEX_FLAGS, False))
         columns[(property_name, table_column)] = DiscoveredMaterializedColumn(
             name=name,
+            property_name=property_name,
+            table_column=table_column,
+            is_disabled=is_disabled,
             is_nullable=column_type.startswith("Nullable("),
             clickhouse_type=column_type,
             **flags,
@@ -186,8 +195,11 @@ def get_materialized_columns(
 def get_enabled_materialized_columns(
     table: TablesWithMaterializedColumns,
 ) -> Mapping[tuple[PropertyName, TableColumn], DiscoveredMaterializedColumn]:
-    """Materialized columns on `table` that queries may substitute."""
-    return get_materialized_columns(table)
+    """Materialized columns on `table` that queries may substitute.
+
+    Disabled columns are excluded: they still exist physically but must not be read.
+    """
+    return {key: column for key, column in get_materialized_columns(table).items() if not column.is_disabled}
 
 
 def get_enabled_materialized_columns_by_table() -> Mapping[

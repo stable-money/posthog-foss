@@ -1,7 +1,11 @@
 import pytest
 from unittest.mock import patch
 
-from posthog.clickhouse.materialized_columns_registry import get_materialized_columns, parse_column_comment
+from posthog.clickhouse.materialized_columns_registry import (
+    get_enabled_materialized_columns,
+    get_materialized_columns,
+    parse_column_comment,
+)
 
 
 def _run(columns, indices):
@@ -99,17 +103,26 @@ class TestGetMaterializedColumns:
         )
         assert result[("email", "properties")].has_bloom_filter_index is False
 
-    def test_excludes_disabled_and_elements_chain(self):
-        result = _run(
-            [
-                ("mat_a", "column_materializer::properties::a", "String"),
-                ("mat_b", "column_materializer::properties::b::disabled", "String"),
-                ("mat_c", "column_materializer::elements_chain::c", "String"),
-            ],
-            [],
-        )
-        # A disabled column still exists physically, but must never be substituted in.
-        assert set(result) == {("a", "properties")}
+    def test_reports_disabled_columns_but_never_offers_them_for_substitution(self):
+        columns = [
+            ("mat_a", "column_materializer::properties::a", "String"),
+            ("mat_b", "column_materializer::properties::b::disabled", "String"),
+            ("mat_c", "column_materializer::elements_chain::c", "String"),
+        ]
+        # A disabled column still exists physically, so callers that report on columns need
+        # to see it; a query must never substitute it.
+        assert set(_run(columns, [])) == {("a", "properties"), ("b", "properties")}
+        assert _run(columns, [])[("b", "properties")].is_disabled is True
+
+        def fake(sql, params):
+            return columns if "system.columns" in sql else []
+
+        with patch("posthog.clickhouse.client.sync_execute", side_effect=fake):
+            assert set(get_enabled_materialized_columns("events")) == {("a", "properties")}
+
+    def test_elements_chain_is_never_a_property_lookup(self):
+        result = _run([("mat_c", "column_materializer::elements_chain::c", "String")], [])
+        assert result == {}
 
     def test_skips_the_index_query_when_there_are_no_columns(self):
         calls = []

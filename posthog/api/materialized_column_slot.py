@@ -10,27 +10,26 @@ from rest_framework import (
 from rest_framework.decorators import action
 
 from posthog.api.routing import TeamAndOrgViewSetMixin
+from posthog.clickhouse.materialized_columns import get_enabled_materialized_columns_by_table
 from posthog.helpers.impersonation import is_impersonated
 from posthog.models import MaterializedColumnSlot, MaterializedColumnSlotState, PropertyDefinition, Team
 from posthog.models.activity_logging.activity_log import Change, Detail, log_activity
 from posthog.models.materialized_column_slots import MAX_SLOTS_PER_TEAM
 from posthog.permissions import IsStaffUserOrImpersonating
-from posthog.settings import EE_AVAILABLE
-
-if EE_AVAILABLE:
-    from ee.clickhouse.materialized_columns.columns import get_materialized_columns
 
 logger = structlog.get_logger(__name__)
 
 
 def get_auto_materialized_property_names() -> set[str]:
-    """Get set of property names that are already auto-materialized by PostHog."""
-    if not EE_AVAILABLE:
-        return set()
+    """Property names already materialized by the automatic materializer.
 
+    A slot is not handed out for these, so one property is never materialized twice by two
+    different mechanisms. The map is keyed by (property name, table column) in every
+    implementation, so the names come off the keys.
+    """
     try:
-        materialized_columns = get_materialized_columns("events")
-        return {col.details.property_name for col in materialized_columns.values()}
+        events_columns = get_enabled_materialized_columns_by_table().get("events", {})
+        return {property_name for property_name, _table_column in events_columns}
     except Exception as e:
         logger.warning("Failed to get auto-materialized columns", error=str(e))
         return set()
@@ -136,27 +135,23 @@ class MaterializedColumnSlotViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSe
         These are managed by PostHog's automatic materialization system and cannot be modified here.
         Uses the same cached function that HogQL uses for query rewriting.
         """
-        if not EE_AVAILABLE:
-            return response.Response([])
-
         try:
-            # Get all auto-materialized columns using the cached function
-            # This is the same cache that HogQL uses (15 minute TTL with background refresh)
-            materialized_columns = get_materialized_columns("events")
+            # Same 15-minute cache HogQL reads for query rewriting.
+            events_columns = get_enabled_materialized_columns_by_table().get("events", {})
 
-            # Only show properties column materialized columns (exclude person_properties)
-            results = []
-            for column in materialized_columns.values():
-                if column.details.table_column == "properties":
-                    results.append(
-                        {
-                            "column_name": column.name,
-                            "property_name": column.details.property_name,
-                            "table_column": column.details.table_column,
-                            "is_disabled": column.details.is_disabled,
-                            "is_nullable": column.is_nullable,
-                        }
-                    )
+            # Only the properties column; person_properties is not offered for slots.
+            results = [
+                {
+                    "column_name": column.name,
+                    "property_name": property_name,
+                    "table_column": table_column,
+                    # Only enabled columns are returned here, so nothing listed is disabled.
+                    "is_disabled": False,
+                    "is_nullable": column.is_nullable,
+                }
+                for (property_name, table_column), column in events_columns.items()
+                if table_column == "properties"
+            ]
 
             return response.Response(results)
         except Exception as e:
