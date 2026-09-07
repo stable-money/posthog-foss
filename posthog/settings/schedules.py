@@ -55,6 +55,15 @@ CLEAR_CLICKHOUSE_REMOVED_DATA_SCHEDULE_CRON = get_from_env(
     "0 5 * * SUN",
 )
 
+# Schedule to pick event properties worth materializing. Follows crontab syntax.
+# Use empty string to prevent this.
+# Saturday, ahead of the Sunday 00:00 dmat backfill workflow, so slots queued by a run are
+# picked up by the very next backfill rather than waiting a week.
+MATERIALIZED_COLUMN_SELECTION_SCHEDULE_CRON = get_from_env(
+    "MATERIALIZED_COLUMN_SELECTION_SCHEDULE_CRON",
+    "0 5 * * SAT",
+)
+
 # Schedule to delete redundant ClickHouse data on. Follows crontab syntax.
 # Use empty string to prevent this
 CLEAR_CLICKHOUSE_DELETED_PERSON_SCHEDULE_CRON = get_from_env(

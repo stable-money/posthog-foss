@@ -152,10 +152,39 @@ anything whose queries errored or where more than 9 exceeded 40s over 168 hours,
 100 per run. The slot path is deliberate instead — a staff user requests a property through
 the API and the weekly workflow allocates, backfills and activates it.
 
-That is a real behavioural change and worth stating plainly: this build no longer tunes
-itself. Nobody chose the 95 columns currently in use; the old analyzer accumulated them.
-Reinstating automatic selection means writing a policy that creates PENDING slots, which is
-a small amount of judgement over `system.query_log` rather than any of the hard machinery.
+That is a real behavioural change and worth stating plainly: the slot path alone does not
+tune itself. Nobody chose the 95 columns currently in use; the old analyzer accumulated
+them. Phase 3 reinstates automatic selection.
+
+## Phase 3 — selection (done)
+
+`posthog/clickhouse/materialized_column_selection.py` restores the missing half: it reads
+`system.query_log`, finds event properties still being pulled out of the JSON blob by
+queries that are slow or failing, and queues them as PENDING slots. Creating the row is the
+whole action — the weekly backfill workflow allocates the column index and fills it. No
+DDL, no mutation.
+
+Selection is deliberately more conservative than the analyzer it replaces, because a slot
+is a scarcer resource than an ad-hoc column:
+
+| | Old `ee` analyzer | This policy |
+|---|---|---|
+| Window | 168h | 168h (`MATERIALIZED_COLUMN_SELECTION_PERIOD_HOURS`) |
+| Slow threshold | 40s | 10s (`..._SLOW_QUERY_MS`) |
+| Count threshold | >9 slow queries | >=10 slow queries, or any failure (`..._MIN_SLOW_QUERIES`) |
+| Cap | 100 per run | 5 per team per run (`..._MAX_PER_RUN`) |
+| Also capped by | — | `MAX_SLOTS_PER_TEAM`, the physical `dmat_string` pool |
+
+A candidate is dropped unless it is an events-table `properties` read — `person_properties`
+and `groupN_properties` reach the query log in the same shape but cannot take a slot — and
+unless the taxonomy already knows the property. Anything already materialized by either
+mechanism is skipped, so a property is never materialized twice.
+
+`clickhouse_materialize_columns` keeps its task name and now calls the policy, still behind
+`recompute_materialized_columns_enabled()`. Its cron moved out of `ee/settings.py` to
+`MATERIALIZED_COLUMN_SELECTION_SCHEDULE_CRON` (`0 5 * * SAT`, ahead of the Sunday 00:00
+backfill so a queued slot is picked up by the very next run rather than waiting a week).
+`manage.py propose_materialized_column_slots --dry-run --show-candidates` runs it by hand.
 
 ## Explicitly out of scope
 

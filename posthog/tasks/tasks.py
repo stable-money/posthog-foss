@@ -1080,13 +1080,20 @@ def recompute_materialized_columns_enabled() -> bool:
 
 @shared_task(ignore_result=True)
 def clickhouse_materialize_columns() -> None:
-    if recompute_materialized_columns_enabled():
-        try:
-            from ee.clickhouse.materialized_columns.analyze import materialize_properties_task
-        except ImportError:
-            pass
-        else:
-            materialize_properties_task()
+    """Queue slots for event properties whose JSON reads are slow or failing.
+
+    Queueing is the whole job: the weekly dmat backfill workflow allocates the column and
+    fills it. Keeps its original task name so anything already scheduled against it keeps
+    working.
+    """
+    if not recompute_materialized_columns_enabled():
+        return
+
+    from posthog.clickhouse.materialized_column_selection import (
+        propose_slots,  # noqa: PLC0415 — keeps the ClickHouse query stack off the task import path
+    )
+
+    propose_slots()
 
 
 @shared_task(ignore_result=True, queue=CeleryQueue.USAGE_REPORTS.value)

@@ -1,15 +1,31 @@
 """Tests for MaterializedColumnSlot REST API endpoints."""
 
 from posthog.test.base import APIBaseTest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from parameterized import parameterized
 from rest_framework import status
 
+from posthog.clickhouse.materialized_columns_registry import DiscoveredMaterializedColumn
 from posthog.models import MaterializedColumnSlot, MaterializedColumnSlotState, PropertyDefinition
 from posthog.models.materialized_column_slots import MAX_SLOTS_PER_TEAM
 
 from products.event_definitions.backend.models.property_definition import PropertyType
+
+
+def _materialized_column(name, property_name, table_column):
+    return DiscoveredMaterializedColumn(
+        name=name,
+        property_name=property_name,
+        table_column=table_column,
+        is_disabled=False,
+        is_nullable=True,
+        has_minmax_index=False,
+        has_bloom_filter_index=False,
+        has_ngram_lower_index=False,
+        has_bloom_filter_lower_index=False,
+        clickhouse_type="String",
+    )
 
 
 class TestMaterializedColumnSlotAPI(APIBaseTest):
@@ -198,27 +214,16 @@ class TestMaterializedColumnSlotAPI(APIBaseTest):
         assert "custom_prop" in prop_names
         assert "utm_source" not in prop_names
 
-    @patch("posthog.api.materialized_column_slot.get_materialized_columns")
-    @patch("posthog.api.materialized_column_slot.EE_AVAILABLE", True)
+    @patch("posthog.api.materialized_column_slot.get_enabled_materialized_columns_by_table")
     def test_auto_materialized_returns_only_properties_columns(self, mock_get_mat_cols):
         """Test that auto_materialized excludes person_properties columns."""
-        mock_column = MagicMock()
-        mock_column.name = "mat_$current_url"
-        mock_column.details.property_name = "$current_url"
-        mock_column.details.table_column = "properties"
-        mock_column.details.is_disabled = False
-        mock_column.is_nullable = True
-
-        mock_person_column = MagicMock()
-        mock_person_column.name = "mat_pp_$initial_utm_source"
-        mock_person_column.details.property_name = "$initial_utm_source"
-        mock_person_column.details.table_column = "person_properties"
-        mock_person_column.details.is_disabled = False
-        mock_person_column.is_nullable = True
-
         mock_get_mat_cols.return_value = {
-            "mat_$current_url": mock_column,
-            "mat_pp_$initial_utm_source": mock_person_column,
+            "events": {
+                ("$current_url", "properties"): _materialized_column("mat_$current_url", "$current_url", "properties"),
+                ("$initial_utm_source", "person_properties"): _materialized_column(
+                    "mat_pp_$initial_utm_source", "$initial_utm_source", "person_properties"
+                ),
+            }
         }
 
         response = self.client.get(f"/api/environments/{self.team.id}/materialized_column_slots/auto_materialized/")
@@ -227,13 +232,15 @@ class TestMaterializedColumnSlotAPI(APIBaseTest):
         assert len(response.json()) == 1
         assert response.json()[0]["property_name"] == "$current_url"
 
-    @patch("posthog.api.materialized_column_slot.EE_AVAILABLE", False)
-    def test_auto_materialized_returns_empty_without_ee(self):
-        """Test that auto_materialized returns [] when EE not available."""
+    @patch("posthog.api.materialized_column_slot.get_enabled_materialized_columns_by_table")
+    def test_auto_materialized_reports_a_clickhouse_failure(self, mock_get_mat_cols):
+        # An unreachable cluster must not read as "nothing is materialized" — that would invite
+        # handing out a slot for a property that already has a column.
+        mock_get_mat_cols.side_effect = Exception("ClickHouse is unreachable")
+
         response = self.client.get(f"/api/environments/{self.team.id}/materialized_column_slots/auto_materialized/")
 
-        assert response.status_code == status.HTTP_200_OK
-        assert response.json() == []
+        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
 
     def test_assign_slot_success(self):
         """Test successfully queueing a property as PENDING."""
