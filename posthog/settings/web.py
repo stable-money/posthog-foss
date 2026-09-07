@@ -224,6 +224,12 @@ except ImportError:
 else:
     INSTALLED_APPS.append("ee.apps.EnterpriseConfig")
 
+# Own the "ee" app label. The access control models are still pinned to it, and migrations
+# across nine products depend on nodes in the "ee" migration history. There is no
+# ee/apps.py here, so EE_AVAILABLE stays False and no enterprise settings are loaded.
+if "ee.apps.EnterpriseConfig" not in INSTALLED_APPS:
+    INSTALLED_APPS.append("ee")
+
 # Use django-extensions if it exists
 try:
     import django_extensions  # noqa: F401

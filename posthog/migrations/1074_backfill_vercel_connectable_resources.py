@@ -2,7 +2,12 @@ from django.db import migrations
 
 
 def trigger_backfill(apps, schema_editor):
-    from ee.api.vercel.tasks import backfill_vercel_connectable_resources
+    try:
+        from ee.api.vercel.tasks import backfill_vercel_connectable_resources
+    except ImportError:
+        # No enterprise code in this build, so there is no Vercel integration and nothing
+        # to backfill. The operation is elidable for the same reason.
+        return
 
     backfill_vercel_connectable_resources.delay()
 
