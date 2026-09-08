@@ -54,6 +54,10 @@ _INDEX_FLAGS = (
 # that instead.
 _LOWER_CALL = re.compile(r"^lower\((.+)\)$", re.IGNORECASE)
 
+# A lower() index over a nullable column has to shed the nullability before ClickHouse will
+# take it, so the stored expression carries a wrapper the column name does not.
+_ASSUME_NOT_NULL_CALL = re.compile(r"^assumeNotNull\((.+)\)$", re.IGNORECASE)
+
 # ClickHouse's own type names for the n-gram/token bloom variants.
 _NGRAM_INDEX_TYPES = frozenset({"ngrambf_v1", "tokenbf_v1"})
 
@@ -113,8 +117,8 @@ def _index_flags(database: str, tables: tuple[str, ...]) -> dict[str, dict[str, 
 
     Indices live on the data table (`sharded_events`) while the comments live on the
     distributed one (`events`), so both are read and the results pooled. Expressions that
-    are not a plain column or lower(column) -- mapKeys(...) over a properties group, say --
-    belong to no materialized column and are ignored.
+    are not a plain column, lower(column) or lower(assumeNotNull(column)) -- mapKeys(...)
+    over a properties group, say -- belong to no materialized column and are ignored.
     """
     from posthog.clickhouse.client import sync_execute
 
@@ -131,6 +135,9 @@ def _index_flags(database: str, tables: tuple[str, ...]) -> dict[str, dict[str, 
         target = expr.strip().strip("`")
         lowered = _LOWER_CALL.match(target)
         column = (lowered.group(1).strip().strip("`") if lowered else target).strip()
+        unwrapped = _ASSUME_NOT_NULL_CALL.match(column)
+        if unwrapped:
+            column = unwrapped.group(1).strip().strip("`")
         if not column or "(" in column:
             continue
 

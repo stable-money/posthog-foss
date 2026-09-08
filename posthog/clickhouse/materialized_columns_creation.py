@@ -16,7 +16,6 @@ a migration that needs one specific column and for tests.
 """
 
 import re
-import secrets
 import dataclasses
 
 from posthog.clickhouse.client import sync_execute
@@ -31,6 +30,7 @@ from posthog.clickhouse.materialized_columns_registry import (
     DEFAULT_TABLE_COLUMN,
     DiscoveredMaterializedColumn,
     get_materialized_columns,
+    parse_column_comment,
 )
 from posthog.models.property import PropertyName, TableColumn
 from posthog.settings import CLICKHOUSE_CLUSTER, CLICKHOUSE_DATABASE
@@ -173,19 +173,28 @@ def materialize(
 ) -> DiscoveredMaterializedColumn:
     """Add a materialized column for one property, and return it as the registry sees it.
 
-    Raises ValueError if the property already has a column, so a caller that runs more than
-    once does not end up with two columns for one property.
+    Returns the existing column unchanged if the property already has one of the same
+    shape, and raises if one exists with a different nullability.
     """
     if table not in MATERIALIZATION_VALID_TABLES:
         raise ValueError(f"Cannot materialize property for table {table}")
 
-    if (property, table_column) in get_materialized_columns(table):
-        raise ValueError(f"Property {property} is already materialized on {table}.{table_column}")
+    already = get_materialized_columns(table).get((property, table_column))
+    if already is not None:
+        if already.is_nullable != is_nullable:
+            raise ValueError(
+                f"Property {property} is already materialized on {table}.{table_column} with "
+                f"is_nullable={already.is_nullable}, not {is_nullable}"
+            )
+        # Same property, same shape: hand back the column that is already there rather than
+        # making a second one. Callers that run more than once -- a migration, a test that
+        # does not own the whole database -- then do not have to care about the order.
+        return already
 
     column = column_name or _column_name(table, table_column, property)
-    if _column_exists(_data_table(table), column):
-        # A name collision with a column for some other property. Keep both.
-        column = f"{column}_{secrets.token_hex(2)}"
+    existing_property = _property_of_existing_column(_data_table(table), column)
+    if existing_property is not None and existing_property != property:
+        raise ValueError(f"Column {column} on {table} already materializes {existing_property!r}, not {property!r}")
 
     details = MaterializedColumnDetails(table_column=table_column, property_name=property, is_disabled=False)
     expression = _extract_expression(table_column, property, is_nullable)
@@ -202,14 +211,21 @@ def materialize(
         )
 
     data_table = _data_table(table)
+    # A lower() index has to be built on the same expression the query uses, and the query
+    # uses lower(<column>). ClickHouse will not put an ngram or token bloom filter on a
+    # nullable expression, and an index over lower(assumeNotNull(<column>)) is legal but
+    # never matches, so a nullable column gets no lower() index at all. The returned flags
+    # say so, which is what keeps the planner from rewriting for an index that is not there.
+    lowered = f"lower(assumeNotNull({column}))" if is_nullable else f"lower({column})"
+
     if create_minmax_index:
         _add_index(data_table, get_minmax_index_name(column), column, "minmax")
     if create_bloom_filter_index:
         _add_index(data_table, get_bloom_filter_index_name(column), column, "bloom_filter")
     if create_ngram_lower_index:
-        _add_index(data_table, get_ngram_lower_index_name(column), f"lower({column})", "ngrambf_v1(4, 1024, 3, 0)")
+        _add_index(data_table, get_ngram_lower_index_name(column), lowered, "ngrambf_v1(4, 1024, 3, 0)")
     if create_bloom_filter_lower_index:
-        _add_index(data_table, get_bloom_filter_lower_index_name(column), f"lower({column})", "bloom_filter")
+        _add_index(data_table, get_bloom_filter_lower_index_name(column), lowered, "bloom_filter")
 
     _clear_materialized_columns_cache()
 
@@ -246,9 +262,19 @@ def _add_index(data_table: str, index_name: str, expression: str, index_type: st
     )
 
 
-def _column_exists(table: str, column: ColumnName) -> bool:
+def _property_of_existing_column(table: str, column: ColumnName) -> PropertyName | None:
+    """Which property a column of this name already materializes, or None if there is none.
+
+    The name has to stay a pure function of the property: it lands in generated SQL, so a
+    disambiguating suffix would make every query that reads the column unrepeatable.
+    """
     rows = sync_execute(
-        "SELECT 1 FROM system.columns WHERE database = %(database)s AND table = %(table)s AND name = %(column)s",
+        "SELECT comment FROM system.columns WHERE database = %(database)s AND table = %(table)s AND name = %(column)s",
         {"database": CLICKHOUSE_DATABASE, "table": table, "column": column},
     )
-    return bool(rows)
+    if not rows:
+        return None
+    comment = rows[0][0]
+    if not comment.startswith(COMMENT_PREFIX):
+        return None
+    return parse_column_comment(comment)[1]
