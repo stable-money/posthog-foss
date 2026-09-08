@@ -216,7 +216,11 @@ def materialize(
     # nullable expression, and an index over lower(assumeNotNull(<column>)) is legal but
     # never matches, so a nullable column gets no lower() index at all. The returned flags
     # say so, which is what keeps the planner from rewriting for an index that is not there.
-    lowered = f"lower(assumeNotNull({column}))" if is_nullable else f"lower({column})"
+    # A lower() index only fires when it carries the same expression the query does, and a
+    # nullable column is read as coalesce(<column>, ''). That also happens to be what makes
+    # an ngram index possible at all here, since ClickHouse will not build one over a
+    # nullable expression but coalesce hands it a String.
+    lowered = f"lower(coalesce({column}, ''))" if is_nullable else f"lower({column})"
 
     if create_minmax_index:
         _add_index(data_table, get_minmax_index_name(column), column, "minmax")

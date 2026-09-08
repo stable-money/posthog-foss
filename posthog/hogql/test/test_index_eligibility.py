@@ -38,8 +38,7 @@ from posthog.hogql.property_planner import (
 from posthog.hogql.resolver import resolve_types
 from posthog.hogql.transforms.property_types import build_property_swapper
 
-from posthog.clickhouse.materialized_column_types import MaterializedColumn
-from posthog.clickhouse.materialized_columns_creation import MaterializedColumnDetails
+from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 from posthog.schema_enums import QueryIndexUsage
 
 from products.event_definitions.backend.models.property_definition import PropertyDefinition
