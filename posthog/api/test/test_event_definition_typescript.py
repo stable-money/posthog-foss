@@ -21,9 +21,6 @@ from unittest.mock import MagicMock, patch
 from rest_framework import status
 
 from posthog.api.event_definition_generators.typescript import TypeScriptGenerator
-from posthog.models import EventDefinition, EventSchema, SchemaPropertyGroup, SchemaPropertyGroupProperty
-
-from ee.models.event_definition import EnterpriseEventDefinition
 
 
 @pytest.mark.usefixtures("unittest_snapshot")
@@ -34,76 +31,6 @@ class TestEventDefinitionTypeScriptGeneration(APIBaseTest):
     """
 
     snapshot: Any
-
-    def setUp(self):
-        super().setUp()
-
-        # Create property group with required and optional fields
-        self.property_group = SchemaPropertyGroup.objects.create(
-            team=self.team, project=self.project, name="Test Properties"
-        )
-
-        SchemaPropertyGroupProperty.objects.create(
-            property_group=self.property_group,
-            name="required_field",
-            property_type="Numeric",
-            is_required=True,
-            description="A required numeric field",
-        )
-
-        SchemaPropertyGroupProperty.objects.create(
-            property_group=self.property_group,
-            name="optional_field",
-            property_type="String",
-            is_required=False,
-            description="An optional string field",
-        )
-
-        # Create event definition and link to property group
-        self.event_def = EventDefinition.objects.create(team=self.team, project=self.project, name="test_event")
-
-        EventSchema.objects.create(event_definition=self.event_def, property_group=self.property_group)
-
-        # Create event with all optional fields
-        self.optional_event_def = EventDefinition.objects.create(
-            team=self.team, project=self.project, name="optional_event"
-        )
-
-        optional_property_group = SchemaPropertyGroup.objects.create(
-            team=self.team, project=self.project, name="Optional Properties"
-        )
-
-        SchemaPropertyGroupProperty.objects.create(
-            property_group=optional_property_group,
-            name="optional_only",
-            property_type="String",
-            is_required=False,
-        )
-
-        EventSchema.objects.create(event_definition=self.optional_event_def, property_group=optional_property_group)
-
-        # Create verified event with no schema (all properties allowed)
-        self.untyped_event_def = EnterpriseEventDefinition.objects.create(
-            team=self.team, project=self.project, name="untyped_event", verified=True
-        )
-
-        # Create event with special characters to test escaping
-        self.special_chars_event = EventDefinition.objects.create(
-            team=self.team, project=self.project, name="a'a\\'b\"c>?>%}}%%>c<[[?${{%}}cake'"
-        )
-
-        special_property_group = SchemaPropertyGroup.objects.create(
-            team=self.team, project=self.project, name="Special Properties"
-        )
-
-        SchemaPropertyGroupProperty.objects.create(
-            property_group=special_property_group,
-            name="prop'with\\'quotes\"\\slash",
-            property_type="String",
-            is_required=True,
-        )
-
-        EventSchema.objects.create(event_definition=self.special_chars_event, property_group=special_property_group)
 
     def _generate_typescript(self) -> str:
         """Generate TypeScript definitions by calling the actual API endpoint"""

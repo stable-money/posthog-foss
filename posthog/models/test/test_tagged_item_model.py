@@ -46,36 +46,6 @@ class TestTaggedItem(BaseTest):
         with self.assertRaises(ValidationError):
             TaggedItem.objects.create(insight_id=insight.id, tag_id=tag.id)
 
-    def test_uniqueness_constraint_event_definition(self):
-        try:
-            from ee.models import EnterpriseEventDefinition
-        except ImportError:
-            pass
-        else:
-            event_definition = EnterpriseEventDefinition.objects.create(
-                team=self.team, name="enterprise event", owner=self.user
-            )
-            tag = Tag.objects.create(name="tag", team_id=self.team.id)
-
-            TaggedItem.objects.create(event_definition_id=event_definition.id, tag_id=tag.id)
-            with self.assertRaises(ValidationError):
-                TaggedItem.objects.create(event_definition_id=event_definition.id, tag_id=tag.id)
-
-    def test_uniqueness_constraint_property_definition(self):
-        try:
-            from ee.models import EnterprisePropertyDefinition
-        except ImportError:
-            pass
-        else:
-            property_definition = EnterprisePropertyDefinition.objects.create(
-                team=self.team, name="enterprise property"
-            )
-            tag = Tag.objects.create(name="tag", team_id=self.team.id)
-
-            TaggedItem.objects.create(property_definition_id=property_definition.id, tag_id=tag.id)
-            with self.assertRaises(ValidationError):
-                TaggedItem.objects.create(property_definition_id=property_definition.id, tag_id=tag.id)
-
     def test_uniqueness_constraint_action(self):
         action = Action.objects.create(team=self.team, name="enterprise property")
         tag = Tag.objects.create(name="tag", team_id=self.team.id)

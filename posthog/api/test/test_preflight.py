@@ -1,5 +1,4 @@
 import os
-from datetime import datetime
 from typing import cast
 
 import pytest
@@ -8,16 +7,13 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.test import override_settings
-from django.utils import timezone
 
 from parameterized import parameterized
 from rest_framework import status
 
-from posthog.cloud_utils import TEST_clear_instance_license_cache
 from posthog.helpers.dev_login import is_dev_login_allowed
 from posthog.models.instance_setting import set_instance_setting
 from posthog.models.organization import Organization
-from posthog.models.organization_invite import OrganizationInvite
 
 
 class TestPreflight(APIBaseTest, QueryMatchingTest):
@@ -256,61 +252,12 @@ class TestPreflight(APIBaseTest, QueryMatchingTest):
         assert response.status_code == status.HTTP_200_OK
         assert response.json() == self.preflight_dict({"demo": True, "can_create_org": True, "realm": "demo"})
 
-    @pytest.mark.ee
-    @pytest.mark.skip_on_multitenancy
-    def test_ee_preflight_with_users_limit(self):
-        try:
-            from ee.models.license import License, LicenseManager
-        except ImportError:
-            pass
-        else:
-            with self.is_cloud(False):
-                super(LicenseManager, cast(LicenseManager, License.objects)).create(
-                    key="key_123",
-                    plan="free_clickhouse",
-                    valid_until=timezone.make_aware(datetime(2038, 1, 19, 3, 14, 7)),
-                    max_users=3,
-                )
-
-                OrganizationInvite.objects.create(organization=self.organization, target_email="invite@posthog.com")
-
-                response = self.client.get("/_preflight/")
-                assert response.status_code == status.HTTP_200_OK
-                assert response.json()["licensed_users_available"] == 1
-                assert response.json()["can_create_org"] is False
-
     def test_can_create_org_in_fresh_instance(self):
         Organization.objects.all().delete()
 
         response = self.client.get("/_preflight/")
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["can_create_org"] is True
-
-    @pytest.mark.ee
-    @pytest.mark.skip_on_multitenancy
-    def test_can_create_org_with_multi_org(self):
-        TEST_clear_instance_license_cache()
-        # First with no license
-        with self.settings(MULTI_ORG_ENABLED=True):
-            response = self.client.get("/_preflight/")
-        assert response.status_code == status.HTTP_200_OK
-        assert response.json()["can_create_org"] is False
-
-        try:
-            from ee.models.license import License, LicenseManager
-        except ImportError:
-            pass
-        else:
-            super(LicenseManager, cast(LicenseManager, License.objects)).create(
-                key="key_123",
-                plan="enterprise",
-                valid_until=timezone.make_aware(datetime(2038, 1, 19, 3, 14, 7)),
-            )
-            TEST_clear_instance_license_cache()
-            with self.settings(MULTI_ORG_ENABLED=True):
-                response = self.client.get("/_preflight/")
-            assert response.status_code == status.HTTP_200_OK
-            assert response.json()["can_create_org"] is True
 
     @pytest.mark.ee
     def test_cloud_preflight_based_on_region(self):

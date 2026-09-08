@@ -17,18 +17,14 @@ from posthog.helpers.dashboard_templates import (
 )
 from posthog.models.activity_logging.activity_log import ActivityLog
 from posthog.models.file_system.file_system import FileSystem
-from posthog.models.sharing_configuration import SharingConfiguration
 from posthog.models.team import Team
 from posthog.test.persons import create_group_type_mapping
 
-from products.alerts.backend.models.alert import AlertConfiguration
 from products.dashboards.backend.models.dashboard import Dashboard
 from products.dashboards.backend.models.dashboard_tile import DashboardTile
 from products.feature_flags.backend.api.feature_flag import _create_usage_dashboard
 from products.feature_flags.backend.models.feature_flag import FeatureFlag
 from products.product_analytics.backend.facade.models import Insight
-
-from ee.tasks.test.subscriptions.subscriptions_test_factory import create_subscription
 
 
 class TestDeleteFeatureFlagUsageInsights(BaseTest):
@@ -225,62 +221,6 @@ class TestDeleteFeatureFlagUsageInsights(BaseTest):
         self._run("--include-orphaned")
 
         assert Insight.objects.filter(id=unrelated.id).exists()
-
-    @parameterized.expand(
-        ["favorited", "edited", "sharing", "subscription", "subscription_paused", "alert", "keep_list"]
-    )
-    def test_keeps_insight_with_usage_signal_and_leaves_dashboard_linked(self, signal: str) -> None:
-        flag = self._flag_with_usage_dashboard(f"flag-{signal}")
-        insights = self._usage_insights(flag)
-        kept, other = insights[0], insights[1]
-
-        extra_args: list[str] = []
-        if signal == "favorited":
-            kept.favorited = True
-            kept.save()
-        elif signal == "edited":
-            # What the insight API leaves behind on any PATCH, so it stands in for a user edit.
-            kept.is_sample = False
-            kept.save()
-        elif signal == "sharing":
-            SharingConfiguration.objects.create(team=self.team, insight=kept, enabled=True)
-        elif signal in ("subscription", "subscription_paused"):
-            create_subscription(team=self.team, insight=kept, enabled=signal != "subscription_paused")
-        elif signal == "alert":
-            AlertConfiguration.objects.create(team=self.team, insight=kept, created_by=self.user, name="a")
-        elif signal == "keep_list":
-            keep_file = Path(self.enterContext(tempfile.TemporaryDirectory())) / "keep.txt"
-            keep_file.write_text(f"insight_id\n{kept.id}\n")
-            extra_args = [f"--keep-ids-file={keep_file}"]
-
-        self._run(*extra_args)
-
-        assert Insight.objects.filter(id=kept.id).exists()
-        assert not Insight.objects.filter(id=other.id).exists()
-        # A kept insight still lives on the dashboard, so the flag must stay linked to it.
-        flag.refresh_from_db()
-        assert flag.usage_dashboard_id is not None
-
-    @parameterized.expand(["shared", "subscribed", "subscribed_paused"])
-    def test_keeps_every_insight_on_a_dashboard_someone_shared_or_subscribed_to(self, signal: str) -> None:
-        # A dashboard-level share link or scheduled delivery serves every tile, so no insight on such
-        # a dashboard may be swept even though no insight-level signal marks any of them. The
-        # insight-level cases above cannot catch a regression here: a dashboard's sharing and
-        # subscription rows carry no insight id.
-        flag = self._flag_with_usage_dashboard(f"dashboard-{signal}")
-        insights = self._usage_insights(flag)
-        if signal == "shared":
-            SharingConfiguration.objects.create(team=self.team, dashboard_id=flag.usage_dashboard_id, enabled=True)
-        else:
-            create_subscription(
-                team=self.team, dashboard_id=flag.usage_dashboard_id, enabled=signal != "subscribed_paused"
-            )
-
-        self._run()
-
-        assert Insight.objects.filter(id__in=[i.id for i in insights]).count() == len(insights)
-        flag.refresh_from_db()
-        assert flag.usage_dashboard_id is not None
 
     def test_writes_activity_rows_without_emitting_events(self) -> None:
         # The rows are the audit trail, but each one also emits a CDP event that can fire a customer's

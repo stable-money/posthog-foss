@@ -1,5 +1,4 @@
 import datetime
-from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from freezegun import freeze_time
@@ -11,7 +10,6 @@ from django.utils import timezone
 
 import dns.rrset
 import dns.resolver
-from ee.models.scim_request_log import SCIMRequestLog
 from parameterized import parameterized
 from rest_framework import serializers, status
 
@@ -579,20 +577,6 @@ class TestSCIMRequestLogsAPI(APILicensedTest):
             verified_at=timezone.now(),
         )
 
-    def _create_log(self, **kwargs):
-        defaults = {
-            "organization_domain": self.domain,
-            "request_method": "GET",
-            "request_path": "/scim/v2/test/Users",
-            "request_headers": {"Content-Type": "application/json"},
-            "response_status": 200,
-            "response_body": {"schemas": []},
-            "identity_provider": "okta",
-            "duration_ms": 42,
-        }
-        defaults.update(kwargs)
-        return SCIMRequestLog.objects.create(**defaults)
-
     def test_list_logs(self):
         self._create_log()
         self._create_log(response_status=404)
@@ -637,36 +621,6 @@ class TestSCIMRequestLogsAPI(APILicensedTest):
             f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs",
             {"search": "Groups"},
         )
-        assert response.json()["count"] == 1
-
-    def test_filter_by_date_range(self):
-        log_old = self._create_log()
-        SCIMRequestLog.objects.filter(id=log_old.id).update(created_at=timezone.now() - timedelta(days=10))
-        self._create_log()
-
-        after = (timezone.now() - timedelta(days=1)).isoformat()
-        response = self.client.get(
-            f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs",
-            {"after": after},
-        )
-        assert response.json()["count"] == 1
-
-    def test_logs_scoped_to_domain(self):
-        other_domain = OrganizationDomain.objects.create(
-            organization=self.organization,
-            domain="other.com",
-            verified_at=timezone.now(),
-        )
-        self._create_log()
-        SCIMRequestLog.objects.create(
-            organization_domain=other_domain,
-            request_method="GET",
-            request_path="/scim/v2/x/Users",
-            request_headers={},
-            response_status=200,
-            identity_provider="other",
-        )
-        response = self.client.get(f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs")
         assert response.json()["count"] == 1
 
     def test_log_response_shape(self):

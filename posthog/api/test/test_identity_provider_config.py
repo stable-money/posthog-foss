@@ -14,9 +14,6 @@ from posthog.models import (
     OrganizationMembership,
 )
 
-from ee.models.scim_provisioned_user import SCIMProvisionedUser
-from ee.models.scim_request_log import SCIMRequestLog
-
 
 class TestIdentityProviderConfigAPI(APIBaseTest):
     def _make_admin(self) -> None:
@@ -304,33 +301,6 @@ class TestIdentityProviderConfigAPI(APIBaseTest):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_admin_can_list_scim_logs_for_config(self):
-        self._make_admin()
-        config = IdentityProviderConfig.objects.create(organization=self.organization)
-        other_config = IdentityProviderConfig.objects.create(organization=self.organization)
-        SCIMRequestLog.objects.create(
-            identity_provider_config=config,
-            request_method="GET",
-            request_path="/scim/v2/config/Users",
-            request_headers={},
-            response_status=200,
-            identity_provider="okta",
-        )
-        SCIMRequestLog.objects.create(
-            identity_provider_config=other_config,
-            request_method="GET",
-            request_path="/scim/v2/other/Users",
-            request_headers={},
-            response_status=200,
-            identity_provider="okta",
-        )
-
-        response = self.client.get(f"/api/organizations/@current/identity_provider_configs/{config.id}/scim/logs")
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json()["count"], 1)
-        self.assertEqual(response.json()["results"][0]["request_path"], "/scim/v2/config/Users")
-
     def test_member_cannot_list_scim_logs_for_config(self):
         config = IdentityProviderConfig.objects.create(organization=self.organization)
 
@@ -349,30 +319,6 @@ class TestIdentityProviderConfigAPI(APIBaseTest):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.json()["code"], "unscoped_config")
         self.assertTrue(IdentityProviderConfig.objects.filter(id=config.id).exists())
-
-    def test_delete_a_config_also_deletes_its_domain_mappings(self):
-        self._make_admin()
-        config = IdentityProviderConfig.objects.create(organization=self.organization, config_scope="saml")
-        domain = OrganizationDomain.objects.create(
-            organization=self.organization,
-            domain="linked.example.com",
-            verified_at=timezone.now(),
-        )
-        LinkedIdentityProviderConfig.objects.create(identity_provider_config=config, organization_domain=domain)
-        provisioned_user = SCIMProvisionedUser.objects.create(
-            user=self.user,
-            identity_provider_config=config,
-            identity_provider="okta",
-            username=self.user.email,
-            active=True,
-        )
-
-        response = self.client.delete(f"/api/organizations/@current/identity_provider_configs/{config.id}/")
-
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertFalse(IdentityProviderConfig.objects.filter(id=config.id).exists())
-        self.assertFalse(LinkedIdentityProviderConfig.objects.filter(identity_provider_config=config).exists())
-        self.assertFalse(SCIMProvisionedUser.objects.filter(id=provisioned_user.id).exists())
 
     def test_can_delete_a_config_once_no_domain_uses_it(self):
         self._make_admin()

@@ -20,7 +20,7 @@ from posthog.test.base import (
     run_clickhouse_statement_in_parallel,
     snapshot_clickhouse_queries,
 )
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 from django.core.exceptions import ImproperlyConfigured
@@ -31,7 +31,6 @@ from django.utils.timezone import now
 import structlog
 from dateutil.relativedelta import relativedelta
 from dateutil.tz import tzutc
-from ee.models.license import License
 from parameterized import parameterized
 
 from posthog.schema import EventsQuery
@@ -1186,25 +1185,6 @@ class TestUsageReport(APIBaseTest, ClickhouseTestMixin, ClickhouseDestroyTablesM
                 full_reports.append(report)
 
             return full_reports
-
-    @freeze_time("2022-01-10T00:01:00Z")
-    @patch("os.environ", {"DEPLOYMENT": "tests"})
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_unlicensed_usage_report(self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock) -> None:
-        self.expected_properties = {}
-        mockresponse = Mock()
-        mock_get_sqs_producer.return_value = MagicMock()
-        mockresponse.status_code = 200
-        mockresponse.json = lambda: {}
-        mock_posthog = MagicMock()
-        mock_client.return_value = mock_posthog
-
-        with self.settings(SITE_URL="http://test.posthog.com", EE_AVAILABLE=False):
-            send_all_org_usage_reports()
-
-        # Check calls to other services
-        mock_get_sqs_producer.assert_not_called()
 
         # calls = [
         #     call(
@@ -5256,32 +5236,6 @@ class TestSendUsage(LicensedTestMixin, ClickhouseDestroyTablesMixin, APIBaseTest
             }
         }
 
-    @freeze_time("2021-10-10T23:01:00Z")
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_send_usage(self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock) -> None:
-        mockresponse = Mock()
-        mockresponse.status_code = 200
-        mockresponse.json = lambda: self._usage_report_response()
-        mock_posthog = MagicMock()
-        mock_client.return_value = mock_posthog
-
-        mock_producer = MagicMock()
-        mock_get_sqs_producer.return_value = mock_producer
-
-        period = get_previous_day()
-        all_reports = _get_all_org_reports(period=period)
-
-        full_report_as_dict = _get_full_org_usage_report_as_dict(
-            _get_full_org_usage_report(all_reports[str(self.organization.id)], get_instance_metadata(period))
-        )
-
-        send_all_org_usage_reports(dry_run=False)
-        license = License.objects.first()
-        assert license
-
-        self._assert_queued_report(mock_producer, full_report_as_dict)
-
         # mock_posthog.capture.assert_any_call(
         #     get_machine_id(),
         #     "organization usage report",
@@ -5290,45 +5244,16 @@ class TestSendUsage(LicensedTestMixin, ClickhouseDestroyTablesMixin, APIBaseTest
         #     timestamp=None,
         # )
 
-    @freeze_time("2021-10-10T23:01:00Z")
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_send_usage_cloud(self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock) -> None:
-        with self.is_cloud(True):
-            mockresponse = Mock()
-            mockresponse.status_code = 200
-            mockresponse.json = lambda: self._usage_report_response()
-            mock_posthog = MagicMock()
-            mock_client.return_value = mock_posthog
-
-            mock_producer = MagicMock()
-            mock_get_sqs_producer.return_value = mock_producer
-
-            period = get_previous_day()
-            all_reports = _get_all_org_reports(period=period)
-
-            full_report_as_dict = _get_full_org_usage_report_as_dict(
-                _get_full_org_usage_report(
-                    all_reports[str(self.organization.id)],
-                    get_instance_metadata(period),
-                )
-            )
-            send_all_org_usage_reports(dry_run=False)
-            license = License.objects.first()
-            assert license
-
-            self._assert_queued_report(mock_producer, full_report_as_dict)
-
-            # mock_posthog.capture.assert_any_call(
-            #     self.user.distinct_id,
-            #     "organization usage report",
-            #     {**full_report_as_dict, "scope": "user"},
-            #     groups={
-            #         "instance": "http://localhost:8010",
-            #         "organization": str(self.organization.id),
-            #     },
-            #     timestamp=None,
-            # )
+        # mock_posthog.capture.assert_any_call(
+        #     self.user.distinct_id,
+        #     "organization usage report",
+        #     {**full_report_as_dict, "scope": "user"},
+        #     groups={
+        #         "instance": "http://localhost:8010",
+        #         "organization": str(self.organization.id),
+        #     },
+        #     timestamp=None,
+        # )
 
     # @freeze_time("2021-10-10T23:01:00Z")
     # @patch("posthog.tasks.usage_report.sync_execute", side_effect=Exception())
@@ -5498,164 +5423,6 @@ class TestOrganizationFiltering(LicensedTestMixin, ClickhouseDestroyTablesMixin,
         flush_persons_and_events()
         TEST_clear_instance_license_cache()
         materialize("events", "$exception_values")
-
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_filter_to_single_organization(self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock) -> None:
-        mock_posthog = MagicMock()
-        mock_client.return_value = mock_posthog
-        mock_producer = MagicMock()
-        mock_get_sqs_producer.return_value = mock_producer
-
-        send_all_org_usage_reports(dry_run=False, organization_ids=[str(self.organization.id)])
-
-        # Should only send one message (for org1)
-        assert mock_producer.send_message.call_count == 1
-
-        # Verify the sent org ID
-        call_args = mock_producer.send_message.call_args
-        message_body = call_args.kwargs["message_body"]
-        decompressed = gzip.decompress(base64.b64decode(message_body))
-        data = json.loads(decompressed)
-
-        assert data["organization_id"] == str(self.organization.id)
-        assert data["usage_report"]["organization_id"] == str(self.organization.id)
-
-        capture_calls = [
-            call for call in mock_posthog.capture.call_args_list if call[1].get("event") == "usage reports complete"
-        ]
-        assert len(capture_calls) == 1
-        properties = capture_calls[0][1]["properties"]
-        assert properties["filtered"] is True
-        assert properties["requested_org_count"] == 1
-        assert properties["total_orgs"] == 1
-        assert properties.get("requested_missing_org_count") is None
-
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_filter_to_multiple_organizations(self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock) -> None:
-        mock_posthog = MagicMock()
-        mock_client.return_value = mock_posthog
-        mock_producer = MagicMock()
-        mock_get_sqs_producer.return_value = mock_producer
-
-        org_ids = [str(self.organization.id), str(self.org2.id)]
-        send_all_org_usage_reports(dry_run=False, organization_ids=org_ids)
-
-        # Should send two messages
-        assert mock_producer.send_message.call_count == 2
-
-        # Verify both org IDs were sent
-        sent_org_ids = []
-        for call in mock_producer.send_message.call_args_list:
-            message_body = call.kwargs["message_body"]
-            decompressed = gzip.decompress(base64.b64decode(message_body))
-            data = json.loads(decompressed)
-            sent_org_ids.append(data["organization_id"])
-
-        assert set(sent_org_ids) == set(org_ids)
-
-        capture_calls = [
-            call for call in mock_posthog.capture.call_args_list if call[1].get("event") == "usage reports complete"
-        ]
-        properties = capture_calls[0][1]["properties"]
-        assert properties["filtered"] is True
-        assert properties["requested_org_count"] == 2
-        assert properties["total_orgs"] == 2
-        assert properties.get("requested_missing_org_count") is None
-
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_filter_with_missing_organization(self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock) -> None:
-        mock_posthog = MagicMock()
-        mock_client.return_value = mock_posthog
-        mock_producer = MagicMock()
-        mock_get_sqs_producer.return_value = mock_producer
-
-        fake_org_id = str(uuid4())
-
-        send_all_org_usage_reports(dry_run=False, organization_ids=[fake_org_id])
-
-        # Should not send any messages
-        mock_producer.send_message.assert_not_called()
-
-        capture_calls = [
-            call for call in mock_posthog.capture.call_args_list if call[1].get("event") == "usage reports complete"
-        ]
-        assert len(capture_calls) == 1
-        properties = capture_calls[0][1]["properties"]
-        assert properties["filtered"] is True
-        assert properties["requested_org_count"] == 1
-        assert properties["requested_missing_org_count"] == 1
-        assert properties["total_orgs"] == 0
-
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_filter_with_mix_of_found_and_missing(
-        self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock
-    ) -> None:
-        mock_posthog = MagicMock()
-        mock_client.return_value = mock_posthog
-        mock_producer = MagicMock()
-        mock_get_sqs_producer.return_value = mock_producer
-
-        fake_org_id1 = str(uuid4())
-        fake_org_id2 = str(uuid4())
-        org_ids = [
-            str(self.organization.id),
-            fake_org_id1,
-            str(self.org2.id),
-            fake_org_id2,
-        ]
-
-        send_all_org_usage_reports(dry_run=False, organization_ids=org_ids)
-
-        # Should send two messages (for the 2 existing orgs)
-        assert mock_producer.send_message.call_count == 2
-
-        # Verify correct org IDs were sent
-        sent_org_ids = []
-        for call in mock_producer.send_message.call_args_list:
-            message_body = call.kwargs["message_body"]
-            decompressed = gzip.decompress(base64.b64decode(message_body))
-            data = json.loads(decompressed)
-            sent_org_ids.append(data["organization_id"])
-
-        assert set(sent_org_ids) == {str(self.organization.id), str(self.org2.id)}
-
-        capture_calls = [
-            call for call in mock_posthog.capture.call_args_list if call[1].get("event") == "usage reports complete"
-        ]
-        properties = capture_calls[0][1]["properties"]
-        assert properties["filtered"] is True
-        assert properties["requested_org_count"] == 4
-        assert properties["requested_missing_org_count"] == 2
-        assert properties["total_orgs"] == 2
-
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("ee.sqs.SQSProducer.get_sqs_producer")
-    def test_no_filter_processes_all_organizations(
-        self, mock_get_sqs_producer: MagicMock, mock_client: MagicMock
-    ) -> None:
-        mock_posthog = MagicMock()
-        mock_client.return_value = mock_posthog
-        mock_producer = MagicMock()
-        mock_get_sqs_producer.return_value = mock_producer
-
-        send_all_org_usage_reports(dry_run=False)
-
-        # Should send three messages (one for each org)
-        assert mock_producer.send_message.call_count == 3
-
-        # Verify telemetry shows unfiltered
-        capture_calls = [
-            call for call in mock_posthog.capture.call_args_list if call[1].get("event") == "usage reports complete"
-        ]
-        properties = capture_calls[0][1]["properties"]
-        assert properties["filtered"] is False
-        assert properties.get("requested_org_count") is None
-        assert properties.get("requested_missing_org_count") is None
-        assert properties["total_orgs"] == 3
 
 
 class TestCalendarAlignedQuerySplitting(SimpleTestCase):

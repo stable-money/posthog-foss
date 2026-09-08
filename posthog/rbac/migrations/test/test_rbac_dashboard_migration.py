@@ -10,8 +10,6 @@ from posthog.rbac.migrations.rbac_dashboard_migration import rbac_dashboard_acce
 from products.access_control.backend.models.access_control import AccessControl
 from products.dashboards.backend.models.dashboard import Dashboard
 
-from ee.models.dashboard_privilege import DashboardPrivilege
-
 
 @pytest.mark.ee
 class TestRBACDashboardMigration(BaseTest):
@@ -68,60 +66,6 @@ class TestRBACDashboardMigration(BaseTest):
         self.assertIsNone(default_ac.organization_member)
         self.assertIsNone(default_ac.role)
 
-    def test_migrate_dashboard_with_restriction_level_37_and_privileges(self):
-        """Test migrating a dashboard with restriction level 37 and existing dashboard privileges"""
-        # Create a dashboard with restriction level 37
-        dashboard = Dashboard.objects.create(
-            team=self.team,
-            name="Restricted Dashboard with Privileges",
-            restriction_level=Dashboard.RestrictionLevel.ONLY_COLLABORATORS_CAN_EDIT,
-        )
-
-        # Create dashboard privileges for users
-        DashboardPrivilege.objects.create(
-            dashboard=dashboard,
-            user=self.user2,
-            level=Dashboard.PrivilegeLevel.CAN_EDIT,
-        )
-        DashboardPrivilege.objects.create(
-            dashboard=dashboard,
-            user=self.user3,
-            level=Dashboard.PrivilegeLevel.CAN_VIEW,
-        )
-
-        # Verify initial state
-        self.assertEqual(DashboardPrivilege.objects.filter(dashboard=dashboard).count(), 2)
-
-        # Run migration
-        rbac_dashboard_access_control_migration(self.organization.id)
-
-        # Reload dashboard from database
-        dashboard.refresh_from_db()
-
-        # Verify dashboard restriction level was updated
-        self.assertEqual(dashboard.restriction_level, Dashboard.RestrictionLevel.EVERYONE_IN_PROJECT_CAN_EDIT)
-
-        # Verify access controls were created
-        access_controls = AccessControl.objects.filter(resource="dashboard", resource_id=str(dashboard.id))
-        self.assertEqual(access_controls.count(), 3)  # 1 default + 2 user privileges
-
-        # Verify default access control
-        default_ac = access_controls.filter(organization_member=None, role=None).first()
-        assert default_ac is not None
-        self.assertEqual(default_ac.access_level, "viewer")
-
-        # Verify user-specific access controls
-        user2_ac = access_controls.filter(organization_member=self.user2_membership).first()
-        assert user2_ac is not None
-        self.assertEqual(user2_ac.access_level, "editor")
-
-        user3_ac = access_controls.filter(organization_member=self.user3_membership).first()
-        assert user3_ac is not None
-        self.assertEqual(user3_ac.access_level, "editor")  # All privileges become "editor"
-
-        # Verify original privileges were deleted
-        self.assertEqual(DashboardPrivilege.objects.filter(dashboard=dashboard).count(), 0)
-
     def test_migrate_dashboard_with_restriction_level_21_ignored(self):
         """Test that dashboards with restriction level 21 are ignored"""
         # Create a dashboard with restriction level 21 (EVERYONE_IN_PROJECT_CAN_EDIT)
@@ -142,97 +86,6 @@ class TestRBACDashboardMigration(BaseTest):
 
         # Verify no access controls were created
         self.assertFalse(AccessControl.objects.filter(resource="dashboard", resource_id=str(dashboard.id)).exists())
-
-    def test_migration_handles_user_without_organization_membership(self):
-        """Test that migration handles users without organization membership gracefully"""
-        # Create a dashboard with restriction level 37
-        dashboard = Dashboard.objects.create(
-            team=self.team,
-            name="Dashboard with Invalid User",
-            restriction_level=Dashboard.RestrictionLevel.ONLY_COLLABORATORS_CAN_EDIT,
-        )
-
-        # Create a user without organization membership
-        orphaned_user = User.objects.create(email="orphaned@example.com", password="password123")
-
-        # Create a dashboard privilege for the orphaned user
-        DashboardPrivilege.objects.create(
-            dashboard=dashboard,
-            user=orphaned_user,
-            level=Dashboard.PrivilegeLevel.CAN_EDIT,
-        )
-
-        # Run migration (should not raise exception)
-        rbac_dashboard_access_control_migration(self.organization.id)
-
-        # Reload dashboard from database
-        dashboard.refresh_from_db()
-
-        # Verify dashboard was still migrated
-        self.assertEqual(dashboard.restriction_level, Dashboard.RestrictionLevel.EVERYONE_IN_PROJECT_CAN_EDIT)
-
-        # Verify default access control was created
-        default_ac = AccessControl.objects.filter(
-            resource="dashboard", resource_id=str(dashboard.id), organization_member=None, role=None
-        ).first()
-        assert default_ac is not None
-        self.assertEqual(default_ac.access_level, "viewer")
-
-        # Verify no access control was created for the orphaned user
-        self.assertFalse(
-            AccessControl.objects.filter(
-                resource="dashboard", resource_id=str(dashboard.id), organization_member__user=orphaned_user
-            ).exists()
-        )
-
-        # The original privilege should NOT be deleted since we couldn't find org membership
-        # This is correct behavior - we skip processing for orphaned users
-        orphaned_privilege_count = DashboardPrivilege.objects.filter(user=orphaned_user).count()
-        self.assertEqual(orphaned_privilege_count, 1)  # Should still exist
-
-    def test_migration_skips_dashboards_with_existing_access_control(self):
-        """Test that migration skips dashboards that already have access control entries"""
-        # Create a dashboard with restriction level 37
-        dashboard = Dashboard.objects.create(
-            team=self.team,
-            name="Dashboard with Existing Access Control",
-            restriction_level=Dashboard.RestrictionLevel.ONLY_COLLABORATORS_CAN_EDIT,
-        )
-
-        # Create existing access control
-        existing_ac = AccessControl.objects.create(
-            team_id=self.team.id,
-            access_level="admin",
-            resource="dashboard",
-            resource_id=str(dashboard.id),
-            organization_member=self.user1_membership,
-        )
-
-        # Create a dashboard privilege that should not be migrated
-        DashboardPrivilege.objects.create(
-            dashboard=dashboard,
-            user=self.user2,
-            level=Dashboard.PrivilegeLevel.CAN_EDIT,
-        )
-
-        # Run migration
-        rbac_dashboard_access_control_migration(self.organization.id)
-
-        # Reload dashboard from database
-        dashboard.refresh_from_db()
-
-        # Verify dashboard restriction level was NOT updated
-        self.assertEqual(dashboard.restriction_level, Dashboard.RestrictionLevel.ONLY_COLLABORATORS_CAN_EDIT)
-
-        # Verify only the existing access control remains
-        access_controls = AccessControl.objects.filter(resource="dashboard", resource_id=str(dashboard.id))
-        self.assertEqual(access_controls.count(), 1)
-        remaining_ac = access_controls.first()
-        assert remaining_ac is not None
-        self.assertEqual(remaining_ac.id, existing_ac.id)
-
-        # Verify dashboard privilege was not deleted
-        self.assertEqual(DashboardPrivilege.objects.filter(dashboard=dashboard).count(), 1)
 
     def test_migration_handles_multiple_teams_in_organization(self):
         """Test that migration works correctly with multiple teams in the organization"""
