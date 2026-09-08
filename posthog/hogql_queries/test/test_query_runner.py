@@ -686,9 +686,8 @@ class TestQueryRunner(BaseTest):
 
     def test_modifier_passthrough(self):
         try:
+            from posthog.clickhouse.materialized_columns_creation import materialize
             from posthog.hogql_queries.hogql_query_runner import HogQLQueryRunner
-
-            from ee.clickhouse.materialized_columns.analyze import materialize
 
             materialize("events", "$browser")
         except ModuleNotFoundError:

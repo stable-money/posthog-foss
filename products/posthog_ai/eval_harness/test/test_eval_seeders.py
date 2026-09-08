@@ -24,7 +24,8 @@ class _EvalSeedContext:
 class TestErrorTrackingEvalSeeders(ClickhouseTestMixin, APIBaseTest):
     @classmethod
     def setUpClass(cls) -> None:
-        from ee.clickhouse.materialized_columns.columns import get_materialized_columns, materialize
+        from posthog.clickhouse.materialized_columns_creation import materialize
+        from posthog.clickhouse.materialized_columns_registry import get_materialized_columns
 
         for property_name in ("$exception_types", "$exception_values"):
             if (property_name, "properties") not in get_materialized_columns("events"):

@@ -23,6 +23,7 @@ from django.conf import settings
 from django.utils.timezone import now
 
 from dateutil.relativedelta import relativedelta
+from ee.clickhouse.models.test.test_cohort import get_person_ids_by_cohort_id
 from parameterized import parameterized, parameterized_class
 from rest_framework.exceptions import ValidationError
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -35,6 +36,8 @@ from posthog.hogql.printer import prepare_and_print_ast
 
 from posthog.clickhouse.client import sync_execute
 from posthog.clickhouse.log_entries import TRUNCATE_LOG_ENTRIES_TABLE_SQL
+from posthog.clickhouse.materialized_columns_creation import materialize
+from posthog.clickhouse.materialized_columns_registry import get_materialized_columns
 from posthog.models.group.util import create_group
 from posthog.models.team import Team
 from posthog.session_recordings.queries.session_recording_list_from_query import (
@@ -54,9 +57,6 @@ from posthog.test.test_utils import create_group_type_mapping_without_created_at
 
 from products.actions.backend.models.action import Action
 from products.cohorts.backend.models.cohort import Cohort
-
-from ee.clickhouse.materialized_columns.columns import get_materialized_columns, materialize
-from ee.clickhouse.models.test.test_cohort import get_person_ids_by_cohort_id
 
 
 @parameterized_class([{"allow_event_property_expansion": True}, {"allow_event_property_expansion": False}])
@@ -5247,7 +5247,7 @@ class TestClickhouseSessionRecordingsListFromQuery(ClickhouseTestMixin, APIBaseT
             nullcontext()
             if materialize_person_props
             else patch(
-                "ee.clickhouse.materialized_columns.columns.get_materialized_columns",
+                "posthog.clickhouse.materialized_columns_registry.get_materialized_columns",
                 return_value={},
             )
         )
@@ -5349,7 +5349,7 @@ class TestClickhouseSessionRecordingsListFromQuery(ClickhouseTestMixin, APIBaseT
             nullcontext()
             if materialize_person_props
             else patch(
-                "ee.clickhouse.materialized_columns.columns.get_materialized_columns",
+                "posthog.clickhouse.materialized_columns_registry.get_materialized_columns",
                 return_value={},
             )
         )

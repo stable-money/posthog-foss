@@ -13,6 +13,7 @@ from django.db.models import F
 from django.test.utils import CaptureQueriesContext
 
 from dateutil import parser
+from ee.clickhouse.views.experiment_saved_metrics import ExperimentToSavedMetricSerializer
 from parameterized import parameterized
 from rest_framework import status
 
@@ -24,6 +25,7 @@ from posthog.models.personal_api_key import PersonalAPIKey
 from posthog.models.team.extensions import get_or_create_team_extension
 from posthog.models.user import User
 from posthog.models.utils import generate_random_token_personal, hash_key_value
+from posthog.test.licensed_base import APILicensedTest
 from posthog.test.test_journeys import journeys_for
 
 from products.access_control.backend.models.access_control import AccessControl
@@ -49,9 +51,6 @@ from products.experiments.backend.presentation.serializers import ExperimentSeri
 from products.experiments.backend.presentation.views import LIST_DEFERRED_FIELDS, EnterpriseExperimentsViewSet
 from products.feature_flags.backend.models.evaluation_context import EvaluationContext, FeatureFlagEvaluationContext
 from products.feature_flags.backend.models.feature_flag import FeatureFlag
-
-from ee.api.test.base import APILicensedTest
-from ee.clickhouse.views.experiment_saved_metrics import ExperimentToSavedMetricSerializer
 
 
 def _make(cls, **attrs):

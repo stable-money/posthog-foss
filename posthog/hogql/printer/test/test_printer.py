@@ -62,6 +62,13 @@ from posthog.hogql.query import execute_hogql_query
 from posthog.hogql.visitor import clear_locations
 
 from posthog.clickhouse.client.execute import sync_execute
+from posthog.clickhouse.materialized_columns_creation import (
+    get_bloom_filter_index_name,
+    get_bloom_filter_lower_index_name,
+    get_minmax_index_name,
+    get_ngram_lower_index_name,
+    materialize,
+)
 from posthog.models import PropertyDefinition
 from posthog.models.event.sql import (
     EVENTS_JSON_DATA_TABLE,
@@ -76,14 +83,6 @@ from posthog.settings.data_stores import CLICKHOUSE_DATABASE
 from products.cohorts.backend.models.cohort import Cohort
 from products.event_definitions.backend.models.property_definition import PropertyType
 from products.warehouse_sources.backend.facade.models import DataWarehouseCredential, DataWarehouseTable
-
-from ee.clickhouse.materialized_columns.columns import (
-    get_bloom_filter_index_name,
-    get_bloom_filter_lower_index_name,
-    get_minmax_index_name,
-    get_ngram_lower_index_name,
-    materialize,
-)
 
 
 class TestPrinter(BaseTest):
@@ -1053,7 +1052,7 @@ class TestPrinter(BaseTest):
 
     def test_hogql_properties_materialized_json_access(self):
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             # EE not available? Assume we're good
             self.assertEqual(1 + 2, 3)
@@ -1093,7 +1092,7 @@ class TestPrinter(BaseTest):
 
     def test_materialized_fields_and_properties(self):
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             # EE not available? Assume we're good
             self.assertEqual(1 + 2, 3)
@@ -3328,7 +3327,7 @@ class TestPrinter(BaseTest):
             team=self.team, name="is_boolean", property_type="Boolean", type=PropertyDefinition.Type.EVENT
         )
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             # EE not available? Assume we're good
             self.assertEqual(1 + 2, 3)
@@ -3370,7 +3369,7 @@ class TestPrinter(BaseTest):
     @patch("posthog.clickhouse.materialized_columns.get_enabled_materialized_columns_by_table")
     def test_ai_trace_id_optimizations(self, mock_matcols_by_table):
         """Test that $ai_trace_id uses the active storage path without wrappers that block skip indexes."""
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         # The column is in the registry either way; JSON-backed event properties must ignore it.
         mat_col = MaterializedColumn(
@@ -3452,7 +3451,7 @@ class TestPrinter(BaseTest):
     @patch("posthog.clickhouse.materialized_columns.get_enabled_materialized_columns_by_table")
     def test_ai_session_id_optimizations(self, mock_matcols_by_table):
         """Test that $ai_session_id uses the active storage path without wrappers that block skip indexes."""
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         # The column is in the registry either way; JSON-backed event properties must ignore it.
         mat_col = MaterializedColumn(
@@ -3504,7 +3503,7 @@ class TestPrinter(BaseTest):
         # A property read through a column-renamed table (`FROM events AS e (...)`, a ColumnAliasedTableType) must still
         # resolve to the active storage path. Property resolution has to unwrap that table type to reach the real table; if
         # it doesn't, the read silently falls back to a slow JSONExtract over the raw blob.
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         # The column is in the registry either way; JSON-backed event properties must ignore it.
         mat_col = MaterializedColumn(
@@ -3529,8 +3528,7 @@ class TestPrinter(BaseTest):
         # keys with the same SQL shape as ingest and backfill. JSON subcolumns can address the full string-key path
         # directly.
         from posthog.clickhouse.kafka_engine import json_extract_trim_quotes
-
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         # The column is in the registry either way; JSON-backed event properties must ignore it.
         mat_col = MaterializedColumn(
@@ -3956,7 +3954,7 @@ class TestPrinter(BaseTest):
 
     def test_print_hidden_aliases_properties(self):
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             # EE not available? Assume we're good
             self.assertEqual(1 + 2, 3)
@@ -3985,7 +3983,7 @@ class TestPrinter(BaseTest):
 
     def test_print_hidden_aliases_double_property(self):
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             # EE not available? Assume we're good
             self.assertEqual(1 + 2, 3)
@@ -5640,7 +5638,7 @@ class TestMaterializedColumnOptimization(ClickhouseTestMixin, APIBaseTest):
 
     @patch("posthog.clickhouse.materialized_columns.get_enabled_materialized_columns_by_table")
     def test_materialized_column_range_comparison_uses_typed_numeric_source(self, mock_matcols_by_table) -> None:
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         PropertyDefinition.objects.create(
             team=self.team,
@@ -5673,7 +5671,7 @@ class TestMaterializedColumnOptimization(ClickhouseTestMixin, APIBaseTest):
 
     @patch("posthog.clickhouse.materialized_columns.get_enabled_materialized_columns_by_table")
     def test_materialized_column_range_comparison_uses_typed_datetime_source(self, mock_matcols_by_table) -> None:
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         PropertyDefinition.objects.create(
             team=self.team,
@@ -5709,7 +5707,7 @@ class TestMaterializedColumnOptimization(ClickhouseTestMixin, APIBaseTest):
     def test_materialized_column_range_comparison_skips_non_nullable_numeric_source(
         self, mock_matcols_by_table
     ) -> None:
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         PropertyDefinition.objects.create(
             team=self.team,
@@ -6685,7 +6683,7 @@ class TestMaterializedColumnOptimization(ClickhouseTestMixin, APIBaseTest):
 
     @patch("posthog.clickhouse.materialized_columns.get_enabled_materialized_columns_by_table")
     def test_jsonextractstring_not_rewritten_for_non_string_mat_column(self, mock_matcols_by_table) -> None:
-        from ee.clickhouse.materialized_columns.columns import MaterializedColumn, MaterializedColumnDetails
+        from posthog.clickhouse.materialized_columns_creation import MaterializedColumn, MaterializedColumnDetails
 
         # JSONExtractString has string semantics, so a numeric-typed materialized column must not be
         # substituted for it — that would emit a bare Float64 column where a string is expected.

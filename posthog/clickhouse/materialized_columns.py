@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 if EE_AVAILABLE:
-    from ee.clickhouse.materialized_columns.columns import get_enabled_materialized_columns
+    from posthog.clickhouse.materialized_columns_registry import get_enabled_materialized_columns
 
     def get_materialized_column_for_property(
         table: TablesWithMaterializedColumns, table_column: TableColumn, property_name: PropertyName

@@ -13,8 +13,7 @@ from django.utils import timezone
 from rest_framework import status
 
 from posthog.test.insight_queries import default_pageview_query
-
-from ee.api.test.base import APILicensedTest
+from posthog.test.licensed_base import APILicensedTest
 
 if TYPE_CHECKING:
     pass

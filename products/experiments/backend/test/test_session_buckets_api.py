@@ -18,6 +18,7 @@ from posthog.models import EventProperty, Team, User
 from posthog.models.utils import uuid7
 from posthog.session_recordings.models.session_recording import SessionRecording
 from posthog.session_recordings.queries.test.session_replay_sql import produce_replay_summary
+from posthog.test.licensed_base import APILicensedTest
 
 from products.access_control.backend.models.access_control import AccessControl
 from products.actions.backend.models.action import Action
@@ -29,8 +30,6 @@ from products.experiments.backend.hogql_queries.exposure_query_logic import (
 from products.experiments.backend.models.experiment import Experiment
 from products.experiments.backend.session_buckets import MAX_BUCKET_METRICS, MAX_BUCKET_SCAN_DAYS, MAX_BUCKET_SOURCES
 from products.feature_flags.backend.models.feature_flag import FeatureFlag
-
-from ee.api.test.base import APILicensedTest
 
 NOW = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
 EXPERIMENT_START = datetime(2025, 12, 20, tzinfo=UTC)

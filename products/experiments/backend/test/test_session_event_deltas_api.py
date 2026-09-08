@@ -14,14 +14,13 @@ from posthog.models import EventProperty, Team, User
 from posthog.models.utils import uuid7
 from posthog.session_recordings.models.session_recording import SessionRecording
 from posthog.session_recordings.queries.test.session_replay_sql import produce_replay_summary
+from posthog.test.licensed_base import APILicensedTest
 
 from products.actions.backend.models.action import Action
 from products.experiments.backend import session_event_deltas
 from products.experiments.backend.models.experiment import Experiment
 from products.experiments.backend.session_event_deltas import EXPERIMENT_BEHAVIOR_COMPARISON_FLAG
 from products.feature_flags.backend.models.feature_flag import FeatureFlag
-
-from ee.api.test.base import APILicensedTest
 
 NOW = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
 EXPERIMENT_START = datetime(2026, 1, 1, tzinfo=UTC)

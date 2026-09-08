@@ -17,6 +17,7 @@ from posthog.models.user import User
 from posthog.models.utils import generate_random_token_personal, hash_key_value
 from posthog.session_recordings.models.session_recording import SessionRecording
 from posthog.session_recordings.models.session_recording_playlist import SessionRecordingPlaylist
+from posthog.test.licensed_base import APILicensedTest
 from posthog.utils import render_template
 
 from products.access_control.backend.facade.object_names import display_model, resources_with_object_access_controls
@@ -31,8 +32,6 @@ from products.feature_flags.backend.models.feature_flag import FeatureFlag
 from products.notebooks.backend.models import Notebook
 from products.product_analytics.backend.facade.models import Insight
 from products.warehouse_sources.backend.models import DataWarehouseTable, ExternalDataSource
-
-from ee.api.test.base import APILicensedTest
 
 
 class BaseAccessControlTest(APILicensedTest):

@@ -11,14 +11,13 @@ from django.utils import timezone
 
 import dns.rrset
 import dns.resolver
+from ee.models.scim_request_log import SCIMRequestLog
 from parameterized import parameterized
 from rest_framework import serializers, status
 
 from posthog.api.organization_domain import OrganizationDomainSerializer, OrganizationDomainViewset
 from posthog.models import Organization, OrganizationDomain, OrganizationMembership, Team
-
-from ee.api.test.base import APILicensedTest
-from ee.models.scim_request_log import SCIMRequestLog
+from posthog.test.licensed_base import APILicensedTest
 
 
 class FakeAnswer:

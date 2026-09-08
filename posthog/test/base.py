@@ -1172,20 +1172,18 @@ def stripResponse(response, remove=("action", "label", "persons_urls", "filter")
 
 
 def cleanup_materialized_columns():
-    try:
-        from ee.clickhouse.materialized_columns.columns import (
-            MATERIALIZATION_VALID_TABLES,
-            _clear_materialized_columns_cache,
-            get_bloom_filter_index_name,
-            get_bloom_filter_lower_index_name,
-            get_materialized_columns,
-            get_minmax_index_name,
-            get_ngram_lower_index_name,
-        )
-        from ee.clickhouse.materialized_columns.test.test_columns import EVENTS_TABLE_DEFAULT_MATERIALIZED_COLUMNS
-    except:
-        # EE not available? Skip
-        return
+    from posthog.clickhouse.materialized_column_types import (
+        MATERIALIZATION_VALID_TABLES,  # noqa: PLC0415 — keeps the ClickHouse stack off the import path of every test module
+    )
+    from posthog.clickhouse.materialized_columns_creation import (  # noqa: PLC0415 — same
+        EVENTS_TABLE_DEFAULT_MATERIALIZED_COLUMNS,
+        _clear_materialized_columns_cache,
+        get_bloom_filter_index_name,
+        get_bloom_filter_lower_index_name,
+        get_minmax_index_name,
+        get_ngram_lower_index_name,
+    )
+    from posthog.clickhouse.materialized_columns_registry import get_materialized_columns  # noqa: PLC0415 — same
 
     # A prior test may have mutated schema with raw sync_execute, bypassing materialize()/
     # drop_column() (which self-invalidate) — refresh before deciding what to drop below.
@@ -1346,16 +1344,13 @@ def materialized(
     create_bloom_filter_lower_index: bool = False,
 ) -> Iterator[MaterializedColumn]:
     """Materialize a property within the managed block, removing it on exit."""
-    try:
-        from ee.clickhouse.materialized_columns.columns import (
-            get_bloom_filter_index_name,
-            get_bloom_filter_lower_index_name,
-            get_minmax_index_name,
-            get_ngram_lower_index_name,
-            materialize,
-        )
-    except ModuleNotFoundError as e:
-        pytest.xfail(str(e))
+    from posthog.clickhouse.materialized_columns_creation import (  # noqa: PLC0415 — keeps the ClickHouse stack off the import path of every test module
+        get_bloom_filter_index_name,
+        get_bloom_filter_lower_index_name,
+        get_minmax_index_name,
+        get_ngram_lower_index_name,
+        materialize,
+    )
 
     column = None
     try:
@@ -1407,11 +1402,9 @@ def also_test_with_materialized_columns(
         person_properties = []
     if event_properties is None:
         event_properties = []
-    try:
-        from ee.clickhouse.materialized_columns.analyze import materialize
-    except:
-        # EE not available? Just run the main test
-        return lambda fn: fn
+    from posthog.clickhouse.materialized_columns_creation import (
+        materialize,  # noqa: PLC0415 — keeps the ClickHouse stack off the import path of every test module
+    )
 
     def decorator(fn):
         @pytest.mark.ee
@@ -2016,16 +2009,15 @@ if settings.TEST:
 def reset_clickhouse_database() -> None:
     # Dropping tables below removes their materialized columns behind the metadata cache's back,
     # so drop the cached entries with them (mutations via materialize()/drop_column() self-invalidate).
-    try:
-        from ee.clickhouse.materialized_columns.columns import (  # noqa: PLC0415 — keeps the ee dep optional, like the other ee imports in this module
-            MATERIALIZATION_VALID_TABLES,
-            _clear_materialized_columns_cache,
-        )
+    from posthog.clickhouse.materialized_column_types import (
+        MATERIALIZATION_VALID_TABLES,  # noqa: PLC0415 — keeps the ClickHouse stack off the import path of every test module
+    )
+    from posthog.clickhouse.materialized_columns_creation import (
+        _clear_materialized_columns_cache,  # noqa: PLC0415 — same
+    )
 
-        for _mat_table in MATERIALIZATION_VALID_TABLES:
-            _clear_materialized_columns_cache(_mat_table)
-    except ModuleNotFoundError:
-        pass
+    for _mat_table in MATERIALIZATION_VALID_TABLES:
+        _clear_materialized_columns_cache(_mat_table)
     run_clickhouse_statement_in_parallel(
         [
             DROP_RAW_SESSION_MATERIALIZED_VIEW_SQL(),

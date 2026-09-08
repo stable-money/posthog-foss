@@ -10,6 +10,7 @@ from rest_framework import status
 
 from posthog import schema
 from posthog.api.test.dashboards import DashboardAPI
+from posthog.test.licensed_base import LicensedTestMixin
 
 from products.product_analytics.backend.facade.models import Insight
 from products.product_analytics.backend.presentation.insight import (
@@ -17,8 +18,6 @@ from products.product_analytics.backend.presentation.insight import (
     BARE_RENDERED_INSIGHT_VIZ_SOURCE_KINDS,
     MCPInsightSerializer,
 )
-
-from ee.api.test.base import LicensedTestMixin
 
 
 class TestMCPInsightSerializer(SimpleTestCase):

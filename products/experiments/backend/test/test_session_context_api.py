@@ -24,6 +24,7 @@ from posthog.rate_limit import SessionContextsBurstRateThrottle
 from posthog.session_recordings.models.session_recording import SessionRecording
 from posthog.session_recordings.queries.session_replay_events import SessionReplayEvents
 from posthog.session_recordings.queries.test.session_replay_sql import produce_replay_summary
+from posthog.test.licensed_base import APILicensedTest
 
 from products.access_control.backend.facade.api import upsert_property_access_control
 from products.access_control.backend.facade.contracts import PropertyAccessLevel, UpsertPropertyAccessControlInput
@@ -36,8 +37,6 @@ from products.experiments.backend.session_context import (
     _query_stamped_flag_properties,
 )
 from products.feature_flags.backend.models.feature_flag import FeatureFlag
-
-from ee.api.test.base import APILicensedTest
 
 RECORDING_START = datetime(2026, 1, 1, 10, 0, 0, tzinfo=UTC)
 RECORDING_END = datetime(2026, 1, 1, 10, 30, 0, tzinfo=UTC)

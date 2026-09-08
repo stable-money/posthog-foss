@@ -31,6 +31,7 @@ from django.utils.timezone import now
 import structlog
 from dateutil.relativedelta import relativedelta
 from dateutil.tz import tzutc
+from ee.models.license import License
 from parameterized import parameterized
 
 from posthog.schema import EventsQuery
@@ -40,6 +41,7 @@ from posthog.hogql.query import execute_hogql_query
 from posthog.clickhouse.client import sync_execute
 from posthog.clickhouse.client.connection import ClickHouseUser
 from posthog.clickhouse.logs.logs32 import TABLE_NAME as LOGS_LOCAL_TABLE
+from posthog.clickhouse.materialized_columns_creation import materialize
 from posthog.clickhouse.query_tagging import tag_queries
 from posthog.cloud_utils import TEST_clear_instance_license_cache
 from posthog.hogql_queries.events_query_runner import EventsQueryRunner
@@ -76,6 +78,7 @@ from posthog.tasks.usage_report import (
     send_all_org_usage_reports,
 )
 from posthog.test.fixtures import create_app_metric2
+from posthog.test.licensed_base import LicensedTestMixin
 from posthog.test.test_utils import create_group_type_mapping_without_created_at
 from posthog.utils import get_previous_day
 
@@ -97,10 +100,6 @@ from products.warehouse_sources.backend.facade.models import (
     ExternalDataSource,
 )
 from products.warehouse_sources.backend.facade.types import ExternalDataSourceType
-
-from ee.api.test.base import LicensedTestMixin
-from ee.clickhouse.materialized_columns.columns import materialize
-from ee.models.license import License
 
 ErrorTrackingIssue = apps.get_model("error_tracking", "ErrorTrackingIssue")
 

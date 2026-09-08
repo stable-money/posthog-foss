@@ -51,7 +51,7 @@ class TestSyncReplicatedSchema(BaseTest, ClickhouseTestMixin):
 
     def test_create_missing_tables(self):
         try:
-            from ee.clickhouse.materialized_columns.columns import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ImportError:
             pass
         else:

@@ -276,7 +276,7 @@ class TestModifiers(BaseTest):
 
     def test_modifiers_materialization_mode(self):
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             self.skipTest("EE materialized-column helpers are not available")
         materialize("events", "$browser")

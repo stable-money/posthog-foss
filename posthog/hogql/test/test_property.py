@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 from django.conf import settings
 
-from ee.clickhouse.materialized_columns.columns import materialize
 from parameterized import parameterized
 
 from posthog.schema import (
@@ -40,6 +39,7 @@ from posthog.hogql.property import (
 from posthog.hogql.query import execute_hogql_query
 from posthog.hogql.visitor import clear_locations
 
+from posthog.clickhouse.materialized_columns_creation import materialize
 from posthog.constants import (
     PROPERTY_VALUE_NOT_SET_SENTINEL,
     TREND_FILTER_TYPE_ACTIONS,

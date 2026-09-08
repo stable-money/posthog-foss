@@ -799,7 +799,7 @@ class TestMetadata(ClickhouseTestMixin, APIBaseTest):
 
     def test_metadata_property_type_notice_debug(self):
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             # EE not available? Assume we're good
             self.assertEqual(1 + 2, 3)
@@ -865,7 +865,7 @@ class TestMetadata(ClickhouseTestMixin, APIBaseTest):
 
     def test_metadata_property_type_notice_no_debug(self):
         try:
-            from ee.clickhouse.materialized_columns.analyze import materialize
+            from posthog.clickhouse.materialized_columns_creation import materialize
         except ModuleNotFoundError:
             # EE not available? Assume we're good
             self.assertEqual(1 + 2, 3)

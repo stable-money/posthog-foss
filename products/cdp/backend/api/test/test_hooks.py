@@ -6,6 +6,7 @@ from posthog.test.base import ClickhouseTestMixin
 
 from posthog.cdp.templates.hog_function_template import sync_template_to_db
 from posthog.cdp.templates.zapier.template_zapier import template as template_zapier
+from posthog.test.licensed_base import APILicensedTest
 
 from products.actions.backend.models.action import Action
 from products.cdp.backend.api.hooks import create_zapier_hog_function, valid_domain
@@ -13,7 +14,6 @@ from products.cdp.backend.models.hog_functions.hog_function import HogFunction
 from products.cdp.backend.models.hook import Hook
 
 from common.hogvm.python.operation import HOGQL_BYTECODE_VERSION
-from ee.api.test.base import APILicensedTest
 
 
 @pytest.mark.usefixtures("unittest_snapshot")
