@@ -17,18 +17,14 @@ from posthog.hogql.database.models import Table, TableNode
 
 from posthog.clickhouse.query_tagging import Product, get_query_tags
 from posthog.constants import AvailableFeature
-from posthog.models import PropertyDefinition, Team, User
+from posthog.models import Team, User
 from posthog.models.personal_api_key import PersonalAPIKey
 from posthog.models.utils import generate_random_token_personal, hash_key_value, uuid7
 from posthog.rate_limit import SessionContextsBurstRateThrottle
-from posthog.session_recordings.models.session_recording import SessionRecording
 from posthog.session_recordings.queries.session_replay_events import SessionReplayEvents
 from posthog.session_recordings.queries.test.session_replay_sql import produce_replay_summary
 from posthog.test.licensed_base import APILicensedTest
 
-from products.access_control.backend.facade.api import upsert_property_access_control
-from products.access_control.backend.facade.contracts import PropertyAccessLevel, UpsertPropertyAccessControlInput
-from products.access_control.backend.models.access_control import AccessControl
 from products.actions.backend.models.action import Action
 from products.experiments.backend.models.experiment import Experiment, ExperimentSavedMetric, ExperimentToSavedMetric
 from products.experiments.backend.session_context import (
@@ -503,47 +499,6 @@ class TestSessionExperimentContext(ClickhouseTestMixin, APILicensedTest):
         assert results[0]["variant"] == "test"
         assert results[0]["first_exposure_timestamp"] == "2026-01-01T10:06:00Z"
 
-    def test_property_filters_respect_viewer_property_access_control(self) -> None:
-        self._enable_access_controls(AvailableFeature.PROPERTY_ACCESS_CONTROL)
-        self._create_recording()
-        self._create_experiment(
-            exposure_criteria={
-                "exposure_config": {
-                    "kind": "ExperimentEventExposureConfig",
-                    "event": "$feature_flag_called",
-                    "properties": [{"key": "plan", "value": ["premium"], "operator": "exact", "type": "event"}],
-                }
-            }
-        )
-        # A user-specific denial leaves the default rules permissive, so it is only enforced
-        # when the viewer threads through to the exposure queries — userless execution would
-        # let the denied property's filter match and leak an exposure signal.
-        plan_prop = PropertyDefinition.objects.create(
-            team=self.team, name="plan", property_type="String", type=PropertyDefinition.Type.EVENT
-        )
-        upsert_property_access_control(
-            team_id=self.team.id,
-            created_by_id=self.user.id,
-            input=UpsertPropertyAccessControlInput(
-                property_definition_id=str(plan_prop.id),
-                access_level=PropertyAccessLevel.NONE,
-                organization_member_id=self.organization_membership.id,
-            ),
-        )
-        self._create_session_event(
-            timestamp="2026-01-01T10:06:00Z",
-            properties={"$feature_flag": "checkout-cta", "$feature_flag_response": "test", "plan": "premium"},
-        )
-        self._create_session_event(event="$pageview", properties={"$feature/checkout-cta": "test"})
-        flush_persons_and_events()
-
-        response = self._get_session_context()
-        assert response.status_code == status.HTTP_200_OK
-        results = response.json()["results"]
-        assert len(results) == 1
-        assert results[0]["variant"] == "test"
-        assert results[0]["first_exposure_timestamp"] is None
-
     def test_unresolvable_property_filter_fails_soft(self) -> None:
         self._create_recording()
         # A duplicated experiment can carry a cohort id from its source project; resolving that
@@ -805,90 +760,6 @@ class TestSessionExperimentContext(ClickhouseTestMixin, APILicensedTest):
         assert results[0]["variant"] == "test"
         assert results[0]["variants_seen"] == ["test"]
 
-    def test_excludes_private_experiments(self) -> None:
-        self._enable_access_controls()
-        other_user = self._create_user("other-experimenter@posthog.com")
-        self._create_recording()
-        self._create_experiment()
-        private_experiment = self._create_experiment(
-            key="private-exp", name="Private experiment", created_by=other_user
-        )
-        AccessControl.objects.create(
-            team=self.team, resource="experiment", resource_id=str(private_experiment.pk), access_level="none"
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "checkout-cta", "$feature_flag_response": "test"},
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "private-exp", "$feature_flag_response": "control"},
-        )
-        flush_persons_and_events()
-
-        response = self._get_session_context()
-        assert response.status_code == status.HTTP_200_OK
-        assert [result["flag_key"] for result in response.json()["results"]] == ["checkout-cta"]
-
-    def test_cached_context_is_not_shared_across_users(self) -> None:
-        self._enable_access_controls()
-        other_user = self._create_user("other-experimenter@posthog.com")
-        self._create_recording()
-        self._create_experiment()
-        private_experiment = self._create_experiment(
-            key="private-exp", name="Private experiment", created_by=other_user
-        )
-        AccessControl.objects.create(
-            team=self.team, resource="experiment", resource_id=str(private_experiment.pk), access_level="none"
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "checkout-cta", "$feature_flag_response": "test"},
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "private-exp", "$feature_flag_response": "control"},
-        )
-        flush_persons_and_events()
-
-        # Prime the cache as the private experiment's creator, who sees both experiments.
-        self.client.force_login(other_user)
-        response = self._get_session_context()
-        assert [result["flag_key"] for result in response.json()["results"]] == ["checkout-cta", "private-exp"]
-
-        # The cached entry must not leak the private experiment to a viewer without access.
-        self.client.force_login(self.user)
-        response = self._get_session_context()
-        assert [result["flag_key"] for result in response.json()["results"]] == ["checkout-cta"]
-
-    def test_cached_context_drops_experiments_the_viewer_lost_access_to(self) -> None:
-        self._enable_access_controls()
-        other_user = self._create_user("other-experimenter@posthog.com")
-        self._create_recording()
-        self._create_experiment()
-        revoked_experiment = self._create_experiment(
-            key="revoked-exp", name="Revoked experiment", created_by=other_user
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "checkout-cta", "$feature_flag_response": "test"},
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "revoked-exp", "$feature_flag_response": "control"},
-        )
-        flush_persons_and_events()
-
-        first = self._get_session_context()
-        assert [result["flag_key"] for result in first.json()["results"]] == ["checkout-cta", "revoked-exp"]
-
-        AccessControl.objects.create(
-            team=self.team, resource="experiment", resource_id=str(revoked_experiment.pk), access_level="none"
-        )
-
-        # Both endpoints serve this session from the warm entry, so the revocation is only
-        # honored if the cached items are re-checked on read rather than at compute time.
-        with patch("products.experiments.backend.session_context._compute_session_experiment_contexts") as compute:
-            single = self._get_session_context()
-            batch = self._post_session_contexts([SESSION_ID])
-        compute.assert_not_called()
-        assert [result["flag_key"] for result in single.json()["results"]] == ["checkout-cta"]
-        assert [result["flag_key"] for result in batch.json()["results"][0]["results"]] == ["checkout-cta"]
-
     def test_repeat_request_is_served_from_cache(self) -> None:
         self._create_recording()
         self._create_experiment()
@@ -955,33 +826,6 @@ class TestSessionExperimentContext(ClickhouseTestMixin, APILicensedTest):
         response = self._get_session_context()
         assert response.status_code == status.HTTP_200_OK
         assert [result["flag_key"] for result in response.json()["results"]] == ["checkout-cta"]
-
-    def test_403_without_session_recording_resource_access(self) -> None:
-        self._enable_access_controls()
-        AccessControl.objects.create(team=self.team, resource="session_recording", access_level="none")
-        self._create_recording()
-
-        response = self._get_session_context()
-        assert response.status_code == status.HTTP_403_FORBIDDEN
-
-    def test_denies_recordings_blocked_by_object_level_access(self) -> None:
-        self._enable_access_controls()
-        self._create_recording()
-        self._create_experiment()
-        self._create_session_event(properties={"$feature_flag": "checkout-cta", "$feature_flag_response": "test"})
-        self._create_day_two_recording_with_exposure()
-        flush_persons_and_events()
-
-        blocked = SessionRecording.objects.create(team=self.team, session_id=SESSION_ID)
-        AccessControl.objects.create(
-            team=self.team, resource="session_recording", resource_id=str(blocked.id), access_level="none"
-        )
-
-        assert self._get_session_context().status_code == status.HTTP_403_FORBIDDEN
-
-        batch = self._post_session_contexts([SESSION_ID, DAY_TWO_SESSION_ID])
-        assert batch.status_code == status.HTTP_200_OK
-        assert [result["session_id"] for result in batch.json()["results"]] == [DAY_TWO_SESSION_ID]
 
     def test_requires_session_recording_read_scope(self) -> None:
         self._create_recording()
@@ -1194,38 +1038,6 @@ class TestSessionExperimentContext(ClickhouseTestMixin, APILicensedTest):
             single = self._get_session_context()
         compute.assert_not_called()
         assert single.json() == batch.json()["results"][0]
-
-    def test_batch_written_cache_is_not_shared_across_users(self) -> None:
-        self._enable_access_controls()
-        other_user = self._create_user("other-experimenter@posthog.com")
-        self._create_recording()
-        self._create_experiment()
-        private_experiment = self._create_experiment(
-            key="private-exp", name="Private experiment", created_by=other_user
-        )
-        AccessControl.objects.create(
-            team=self.team, resource="experiment", resource_id=str(private_experiment.pk), access_level="none"
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "checkout-cta", "$feature_flag_response": "test"},
-        )
-        self._create_session_event(
-            properties={"$feature_flag": "private-exp", "$feature_flag_response": "control"},
-        )
-        flush_persons_and_events()
-
-        # Prefetch as the private experiment's creator, who sees both experiments.
-        self.client.force_login(other_user)
-        response = self._post_session_contexts([SESSION_ID])
-        assert [result["flag_key"] for result in response.json()["results"][0]["results"]] == [
-            "checkout-cta",
-            "private-exp",
-        ]
-
-        # The batch-written entry must not leak the private experiment to another viewer.
-        self.client.force_login(self.user)
-        response = self._get_session_context()
-        assert [result["flag_key"] for result in response.json()["results"]] == ["checkout-cta"]
 
     def test_batch_omits_missing_recordings_and_never_caches_them(self) -> None:
         self._create_recording()

@@ -17,10 +17,38 @@ LICENSE_REQUIRED_MESSAGE = (
 )
 
 
+# What an enterprise licence unlocked. Not every feature the enum names: a test that asserts
+# a viewer cannot edit is asserting about a feature set, so granting more than the plan did
+# changes the answer.
+ENTERPRISE_FEATURES: list[AvailableFeature] = [
+    AvailableFeature.ZAPIER,
+    AvailableFeature.ORGANIZATIONS_PROJECTS,
+    AvailableFeature.SOCIAL_SSO,
+    AvailableFeature.INGESTION_TAXONOMY,
+    AvailableFeature.PATHS_ADVANCED,
+    AvailableFeature.CORRELATION_ANALYSIS,
+    AvailableFeature.GROUP_ANALYTICS,
+    AvailableFeature.BEHAVIORAL_COHORT_FILTERING,
+    AvailableFeature.WHITE_LABELLING,
+    AvailableFeature.SUBSCRIPTIONS,
+    AvailableFeature.APP_METRICS,
+    AvailableFeature.RECORDINGS_PLAYLISTS,
+    AvailableFeature.RECORDINGS_FILE_EXPORT,
+    AvailableFeature.RECORDINGS_PERFORMANCE,
+    AvailableFeature.HIGH_FREQUENCY_ALERTS,
+    AvailableFeature.REAL_TIME_ALERTS,
+    AvailableFeature.ACCESS_CONTROL,
+    AvailableFeature.SAML,
+    AvailableFeature.SCIM,
+    AvailableFeature.SSO_ENFORCEMENT,
+    AvailableFeature.ROLE_BASED_ACCESS,
+]
+
+
 def grant_all_product_features(organization: Organization) -> None:
-    """Give the organization every feature, the way an enterprise licence did."""
+    """Give the organization the features an enterprise licence used to unlock."""
     organization.available_product_features = [
-        {"key": feature.value, "name": feature.value.replace("_", " ").capitalize()} for feature in AvailableFeature
+        {"key": feature.value, "name": feature.value.replace("_", " ").capitalize()} for feature in ENTERPRISE_FEATURES
     ]
     organization.save()
 

@@ -93,11 +93,11 @@ class MaterializedColumn:
     has_bloom_filter_index: bool = False
     has_ngram_lower_index: bool = False
     has_bloom_filter_lower_index: bool = False
-    clickhouse_type: str = "String"
+    column_type: str = "String"
 
     @property
     def type(self) -> str:
-        return self.clickhouse_type
+        return self.column_type
 
     @property
     def property_name(self) -> PropertyName:

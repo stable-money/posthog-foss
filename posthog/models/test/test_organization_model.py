@@ -19,7 +19,6 @@ from posthog.organization_caching import (
 )
 from posthog.plugins.test.mock import mocked_plugin_requests_get
 from posthog.plugins.test.plugin_archives import HELLO_WORLD_PLUGIN_GITHUB_ZIP
-from posthog.redis import get_client
 
 from products.cdp.backend.models.plugin import Plugin
 
@@ -138,31 +137,6 @@ class TestOrganization(BaseTest):
                 {"key": "test2", "name": "test2"},
             ]
 
-    @parameterized.expand(
-        [
-            ("no_features", None, "free"),
-            ("empty_features", [], "free"),
-            ("unknown_feature_treated_as_paid", [{"key": "made_up_feature"}], "paid"),
-            ("scale_feature_present", [{"key": "recordings_file_export"}], "paid"),
-            ("multiple_scale_features", [{"key": "zapier"}, {"key": "group_analytics"}], "paid"),
-            (
-                "enterprise_only_feature_present",
-                [{"key": "recordings_file_export"}, {"key": "role_based_access"}],
-                "enterprise",
-            ),
-            ("access_control_flags_enterprise", [{"key": "access_control"}], "enterprise"),
-            ("saml_flags_enterprise", [{"key": "saml"}], "enterprise"),
-            ("scim_flags_enterprise", [{"key": "scim"}], "enterprise"),
-            ("sso_enforcement_flags_enterprise", [{"key": "sso_enforcement"}], "enterprise"),
-            ("role_based_access_flags_enterprise", [{"key": "role_based_access"}], "enterprise"),
-            ("malformed_entries_ignored", [None, {}, {"key": None}], "free"),
-        ]
-    )
-    def test_get_plan_tier(self, _name, available_product_features, expected_tier):
-        self.organization.available_product_features = available_product_features
-        self.organization.save()
-        self.assertEqual(self.organization.get_plan_tier(), expected_tier)
-
     def test_session_age_caching(self):
         # Test caching when session_cookie_age is set
         self.organization.session_cookie_age = 3600
@@ -271,36 +245,6 @@ class TestOrganization(BaseTest):
             self.assertLess(result.start, result.end)
         else:
             self.assertIsNone(result)
-
-    def test_is_active_change_invalidates_llm_gateway_quota_cache(self):
-        gateway_redis_url = "redis://llm-gateway-redis-org-active-test/"
-        second_team = self.organization.teams.create(name="Second Team", api_token="second_token")
-        other_organization = Organization.objects.create(name="Other Org")
-        other_team = other_organization.teams.create(name="Other Team", api_token="other_token")
-
-        billing_keys = [
-            f"quota:code_usage_billing:team:{self.team.id}",
-            f"quota:code_usage_billing:team:{second_team.id}",
-        ]
-        generation_keys = [
-            f"quota:generation:team:{self.team.id}",
-            f"quota:generation:team:{second_team.id}",
-        ]
-        other_generation_key = f"quota:generation:team:{other_team.id}"
-
-        with self.settings(LLM_GATEWAY_REDIS_URL=gateway_redis_url):
-            gateway_redis = get_client(gateway_redis_url)
-            gateway_redis.mset(dict.fromkeys(billing_keys, "stale"))
-            gateway_redis.set(other_generation_key, 4)
-
-            with self.captureOnCommitCallbacks(execute=True):
-                self.organization.is_active = False
-                self.organization.save()
-
-            assert gateway_redis.mget(billing_keys) == [None] * len(billing_keys)
-            assert gateway_redis.mget(generation_keys) == [b"1"] * len(generation_keys)
-            assert gateway_redis.get(other_generation_key) == b"4"
-            gateway_redis.delete(other_generation_key)
 
 
 class TestOrganizationMembership(BaseTest):

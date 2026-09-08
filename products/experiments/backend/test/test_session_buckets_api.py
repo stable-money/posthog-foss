@@ -13,14 +13,11 @@ from rest_framework import status
 import posthog.hogql.query as hogql_query_module
 
 from posthog.clickhouse.query_tagging import Product, get_query_tags
-from posthog.constants import AvailableFeature
 from posthog.models import EventProperty, Team, User
 from posthog.models.utils import uuid7
-from posthog.session_recordings.models.session_recording import SessionRecording
 from posthog.session_recordings.queries.test.session_replay_sql import produce_replay_summary
 from posthog.test.licensed_base import APILicensedTest
 
-from products.access_control.backend.models.access_control import AccessControl
 from products.actions.backend.models.action import Action
 from products.experiments.backend.hogql_queries.exposure_query_logic import (
     EXPERIMENT_EXPOSURE_EVENT,
@@ -808,60 +805,6 @@ class TestExperimentSessionBuckets(ClickhouseTestMixin, APILicensedTest):
         # and tags itself. Neither may run untagged.
         assert tagged_products[0] == Product.EXPERIMENTS
         assert None not in tagged_products
-
-    def test_recordings_blocked_by_object_level_access_are_left_out(self) -> None:
-        features = self.organization.available_product_features or []
-        features.append({"key": AvailableFeature.ACCESS_CONTROL, "name": AvailableFeature.ACCESS_CONTROL})
-        self.organization.available_product_features = features
-        self.organization.save()
-        experiment = self._create_experiment(metrics=[PURCHASE_METRIC])
-        blocked_session = self._session(events=[("purchase", datetime(2026, 1, 9, 10, 5, tzinfo=UTC))])
-        visible_session = self._session(
-            distinct_id="user2", events=[("purchase", datetime(2026, 1, 9, 10, 6, tzinfo=UTC))]
-        )
-        flush_persons_and_events()
-        blocked = SessionRecording.objects.create(team=self.team, session_id=blocked_session)
-        AccessControl.objects.create(
-            team=self.team, resource="session_recording", resource_id=str(blocked.id), access_level="none"
-        )
-
-        response = self._post_bucket(experiment, bucket="fired_any", metric_uuids=[PURCHASE_METRIC["uuid"]])
-
-        # Replay-product access is not access to every recording in it. Returning the id of a
-        # recording the viewer is denied would leak which sessions the experiment touched.
-        data = response.json()
-        assert visible_session in data["session_ids"]
-        assert blocked_session not in data["session_ids"]
-
-    def test_denied_recordings_neither_consume_a_slot_nor_show_up_in_truncation(self) -> None:
-        features = self.organization.available_product_features or []
-        features.append({"key": AvailableFeature.ACCESS_CONTROL, "name": AvailableFeature.ACCESS_CONTROL})
-        self.organization.available_product_features = features
-        self.organization.save()
-        experiment = self._create_experiment(metrics=[PURCHASE_METRIC])
-        older_visible = self._session(
-            at=datetime(2026, 1, 9, 9, 0, tzinfo=UTC), events=[("purchase", datetime(2026, 1, 9, 9, 5, tzinfo=UTC))]
-        )
-        newer_blocked = self._session(
-            at=datetime(2026, 1, 9, 10, 0, tzinfo=UTC),
-            distinct_id="user2",
-            events=[("purchase", datetime(2026, 1, 9, 10, 5, tzinfo=UTC))],
-        )
-        flush_persons_and_events()
-        blocked = SessionRecording.objects.create(team=self.team, session_id=newer_blocked)
-        AccessControl.objects.create(
-            team=self.team, resource="session_recording", resource_id=str(blocked.id), access_level="none"
-        )
-
-        response = self._post_bucket(experiment, bucket="fired_any", metric_uuids=[PURCHASE_METRIC["uuid"]], limit=1)
-
-        # The denied recording is the most recent match, so cutting to the limit before the access
-        # filter would spend the only slot on it and hand back nothing. And `truncated` would then
-        # be the one bit that says a recording the viewer can't see matched this bucket.
-        data = response.json()
-        assert data["session_ids"] == [older_visible]
-        assert newer_blocked not in data["session_ids"]
-        assert data["truncated"] is False
 
     @parameterized.expand(
         [

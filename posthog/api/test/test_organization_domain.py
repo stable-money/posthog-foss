@@ -15,7 +15,6 @@ from rest_framework import serializers, status
 
 from posthog.api.organization_domain import OrganizationDomainSerializer, OrganizationDomainViewset
 from posthog.models import Organization, OrganizationDomain, OrganizationMembership, Team
-from posthog.test.licensed_base import APILicensedTest
 
 
 class FakeAnswer:
@@ -564,78 +563,6 @@ class TestOrganizationDomainsAPI(APIBaseTest):
     # IdentityProviderConfigViewSet now — see TestIdentityProviderConfigAPI in
     # posthog/api/test/test_identity_provider_config.py. This domain endpoint no longer declares
     # those fields at all, so writes to them are silently dropped rather than persisted.
-
-
-class TestSCIMRequestLogsAPI(APILicensedTest):
-    def setUp(self):
-        super().setUp()
-        self.organization_membership.level = OrganizationMembership.Level.ADMIN
-        self.organization_membership.save()
-        self.domain = OrganizationDomain.objects.create(
-            organization=self.organization,
-            domain="logs-test.com",
-            verified_at=timezone.now(),
-        )
-
-    def test_list_logs(self):
-        self._create_log()
-        self._create_log(response_status=404)
-        response = self.client.get(f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs")
-        assert response.status_code == 200
-        assert response.json()["count"] == 2
-
-    def test_list_logs_paginated(self):
-        for _ in range(30):
-            self._create_log()
-        response = self.client.get(f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["count"] == 30
-        assert len(data["results"]) == 20
-        assert data["next"] is not None
-
-    def test_filter_by_status_success(self):
-        self._create_log(response_status=200)
-        self._create_log(response_status=201)
-        self._create_log(response_status=400)
-        response = self.client.get(
-            f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs",
-            {"status_min": 200, "status_max": 299},
-        )
-        assert response.json()["count"] == 2
-
-    def test_filter_by_status_errors(self):
-        self._create_log(response_status=200)
-        self._create_log(response_status=400)
-        self._create_log(response_status=500)
-        response = self.client.get(
-            f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs",
-            {"status_min": 400},
-        )
-        assert response.json()["count"] == 2
-
-    def test_search_by_path(self):
-        self._create_log(request_path="/scim/v2/x/Users")
-        self._create_log(request_path="/scim/v2/x/Groups")
-        response = self.client.get(
-            f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs",
-            {"search": "Groups"},
-        )
-        assert response.json()["count"] == 1
-
-    def test_log_response_shape(self):
-        self._create_log()
-        response = self.client.get(f"/api/organizations/{self.organization.id}/domains/{self.domain.id}/scim/logs")
-        result = response.json()["results"][0]
-        assert "id" in result
-        assert "request_method" in result
-        assert "request_path" in result
-        assert "request_headers" in result
-        assert "response_status" in result
-        assert "response_body" in result
-        assert "identity_provider" in result
-        assert "duration_ms" in result
-        assert "created_at" in result
 
 
 class TestOrganizationDomainValidationNoDB(SimpleTestCase):

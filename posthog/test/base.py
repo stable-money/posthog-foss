@@ -1819,6 +1819,10 @@ def _create_action(**kwargs):
     return action
 
 
+def _is_schema_lookup(query: str) -> bool:
+    return any(f"FROM system.{table}" in query for table in ("columns", "tables", "data_skipping_indices"))
+
+
 class ClickhouseTestMixin(QueryMatchingTest):
     RUN_MATERIALIZED_COLUMN_TESTS = True
     # overrides the basetest in posthog/test/base.py
@@ -1895,8 +1899,11 @@ class ClickhouseTestMixin(QueryMatchingTest):
 
         replace_all_numbers = getattr(self, "snapshot_replace_all_numbers", False)
         for query in queries:
-            if "FROM system.columns" not in query:
-                self.assertQueryMatchesSnapshot(query, replace_all_numbers=replace_all_numbers)
+            if _is_schema_lookup(query):
+                # How the materialized column registry finds out what exists. It is not part of
+                # the query under test, and which of its reads are cached varies per run.
+                continue
+            self.assertQueryMatchesSnapshot(query, replace_all_numbers=replace_all_numbers)
 
 
 def run_clickhouse_statement_in_parallel(statements: list[str]) -> None:
@@ -2226,11 +2233,12 @@ def snapshot_clickhouse_queries(fn_or_class):
             fn_or_class(self, *args, **kwargs)
 
         for query in queries:
-            # system.columns / system.tables reads are schema bookkeeping (materialized-column
-            # discovery, events-table existence checks), not behavior worth snapshotting.
-            if "FROM system.columns" not in query and "FROM system.tables" not in query:
-                replace_all_numbers = getattr(self, "snapshot_replace_all_numbers", False)
-                self.assertQueryMatchesSnapshot(query, replace_all_numbers=replace_all_numbers)
+            # Schema bookkeeping — materialized-column discovery, events-table existence
+            # checks — is not behavior worth snapshotting.
+            if _is_schema_lookup(query):
+                continue
+            replace_all_numbers = getattr(self, "snapshot_replace_all_numbers", False)
+            self.assertQueryMatchesSnapshot(query, replace_all_numbers=replace_all_numbers)
 
     return wrapped
 

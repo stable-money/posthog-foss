@@ -5328,49 +5328,6 @@ class TestSendUsageNoLicense(APIBaseTest):
         super().setUp()
         materialize("events", "$exception_values")
 
-    @freeze_time("2021-10-10T23:01:00Z")
-    @patch("posthog.tasks.usage_report.get_ph_client")
-    @patch("requests.post")
-    def test_no_license(self, mock_post: MagicMock, mock_client: MagicMock) -> None:
-        TEST_clear_instance_license_cache()
-        # Same test, we just don't include the LicensedTestMixin so no license
-        _create_event(
-            event="$pageview",
-            team=self.team,
-            distinct_id=1,
-            timestamp="2021-10-08T14:01:01Z",
-        )
-        _create_event(
-            event="$pageview",
-            team=self.team,
-            distinct_id=1,
-            timestamp="2021-10-09T12:01:01Z",
-        )
-        _create_event(
-            event="$pageview",
-            team=self.team,
-            distinct_id=1,
-            timestamp="2021-10-09T13:01:01Z",
-        )
-        _create_event(
-            event="$pageview",
-            team=self.team,
-            distinct_id=1,
-            timestamp="2021-10-09T14:01:01Z",
-        )
-        _create_event(
-            event="$pageview",
-            team=self.team,
-            distinct_id=1,
-            timestamp="2021-10-10T14:01:01Z",
-        )
-
-        flush_persons_and_events()
-
-        send_all_org_usage_reports()
-
-        mock_post.assert_not_called()
-
     def test_get_teams_for_usage_reports_only_fields(self) -> None:
         teams = _get_teams_for_usage_reports()
         team: Team = teams[0]

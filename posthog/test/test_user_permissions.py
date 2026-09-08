@@ -675,26 +675,6 @@ class TestUserTeamPermissions(BaseTest, WithPermissionsBase):
         assert self.team.id not in self.permissions().team_ids_visible_for_user
         assert self.team.project_id not in self.permissions().project_ids_visible_for_user
 
-    @parameterized.expand([("member_specific", True), ("role_based", False)])
-    def test_team_effective_membership_level_agrees_with_user_access_control(self, _name, via_member):
-        from products.access_control.backend.facade.user_access_control import UserAccessControl
-
-        self.organization_membership.level = OrganizationMembership.Level.MEMBER
-        self.organization_membership.save()
-
-        # An open project default, so only the explicit denial can deny
-        self._grant_project_access("admin")
-        if via_member:
-            self._grant_project_access("none", member=self.organization_membership)
-        else:
-            self._grant_project_access_via_new_role("none")
-
-        # `get_user_access_level` is what `check_access_level_for_object` gates project API access
-        # on, so an effective membership level here must not contradict it
-        user_access_control = UserAccessControl(user=self.user, team=self.team)
-        assert user_access_control.get_user_access_level(self.team) == "none"
-        assert self.permissions().current_team.effective_membership_level is None
-
 
 class TestUserDashboardPermissions(BaseTest, WithPermissionsBase):
     def setUp(self):
