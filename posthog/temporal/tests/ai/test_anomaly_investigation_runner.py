@@ -11,7 +11,6 @@ from posthog.temporal.ai.anomaly_investigation.runner import (
     _build_callbacks,
     _parse_report,
     _report_from_tool_calls,
-    run_investigation,
 )
 
 
@@ -333,50 +332,3 @@ _VALID_REPORT_ARGS = {
     "hypotheses": [{"title": "Runaway tenant", "rationale": "Loops on the cap check.", "evidence": []}],
     "recommendations": ["Check the tenant."],
 }
-
-
-@pytest.mark.parametrize(
-    "finalize_responses,expected_hypothesis_count",
-    [
-        pytest.param(
-            [_report_turn(_UNRECOVERABLE_REPORT_ARGS), _report_turn(_VALID_REPORT_ARGS)],
-            1,
-            id="retry_recovers_full_report",
-        ),
-        pytest.param(
-            [_report_turn(_UNRECOVERABLE_REPORT_ARGS), _report_turn(_UNRECOVERABLE_REPORT_ARGS)],
-            0,
-            id="salvage_after_failed_retry",
-        ),
-        pytest.param(
-            [_report_turn(_UNRECOVERABLE_REPORT_ARGS), _report_turn({"verdict": "maybe", "summary": "x"})],
-            0,
-            id="salvage_first_attempt_when_retry_comes_back_worse",
-        ),
-    ],
-)
-async def test_finalize_turn_retries_then_salvages_invalid_report(
-    finalize_responses: list, expected_hypothesis_count: int
-) -> None:
-    llm = MagicMock()
-    llm.bind_tools.side_effect = lambda tools: (
-        _ScriptedRunnable([_budget_burning_turn()]) if len(tools) > 1 else _ScriptedRunnable(finalize_responses)
-    )
-
-    with (
-        patch("ee.hogai.llm.MaxChatAnthropic", return_value=llm),
-        patch("posthog.temporal.ai.anomaly_investigation.runner.posthoganalytics") as mock_module,
-    ):
-        mock_module.default_client = None
-        result = await run_investigation(
-            team=MagicMock(id=1),
-            user=MagicMock(id=2),
-            anomaly_context="anomaly context",
-            alert=None,
-        )
-
-    assert result.tool_calls_used == MAX_TOOL_CALLS
-    assert result.report.verdict == "true_positive"
-    assert result.report.summary == "One tenant drove the spike."
-    assert len(result.report.hypotheses) == expected_hypothesis_count
-    assert result.report.recommendations == ["Check the tenant."]

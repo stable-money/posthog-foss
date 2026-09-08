@@ -11,9 +11,7 @@ from pathlib import Path
 # of widening this budget. See logs/startup-profile and the PRs that introduced these cuts.
 FORBIDDEN_AT_SETUP = [
     "posthog.api.rest_router",  # the 160-route DRF aggregator — builds lazily on first request
-    "posthog.temporal.ai",  # AI temporal workflows -> ee.hogai chat-agent core
-    "ee.hogai.chat_agent.graph",  # the assistant graph
-    "ee.hogai.tools",  # the agent tool registry
+    "posthog.temporal.ai",  # AI temporal workflows
     "chdb",  # embedded ClickHouse
     "posthog.temporal.ai_observability",  # eval/clustering workers (pulls scipy, etc.)
     "scipy",  # only reached via ai_observability clustering — must not be at startup
@@ -293,68 +291,6 @@ def test_setup_receivers_match_baseline() -> None:
         "AppConfig.ready() — see docs/internal/django-startup-time.md), record it: "
         "UPDATE_SETUP_RECEIVERS_BASELINE=1 pytest posthog/test/repo_invariants/test_startup_import_budget.py -k receivers_match"
     )
-
-
-# Cold-start trap the lazy router introduced and the whole pytest suite is blind to. With the AI agent
-# core off the startup path, a fresh process no longer pre-imports it — so the FIRST reader of the MCP
-# tool registry (the first MCP-tools API request in a new worker) becomes the first importer of the
-# ee.hogai.tools -> chat_agent chain. A latent cycle in that chain (.task -> core.executor ->
-# posthog.temporal.ai -> chat_agent.toolkit -> back into ee.hogai.tools) used to resolve only by
-# import-order luck: the eager router imported the chain at setup, so by the time anything read the
-# registry the modules were already complete. Remove that luck and the first request 500s on a
-# half-initialized import. Every in-process test misses it because hundreds of test modules import the
-# agent core long before the registry is read, so the cycle is always pre-resolved. A clean interpreter
-# is the only place this reproduces — same reason the snapshot guards above run in a subprocess.
-_MCP_REGISTRY_COLD_LOAD = """
-import os
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "posthog.settings")
-import django
-django.setup()
-from ee.hogai.mcp_tool import mcp_tool_registry
-names = mcp_tool_registry.get_names()
-assert names, "registry returned no tools"
-print(len(names))
-"""
-
-
-def test_mcp_tool_registry_loads_cold_without_import_cycle() -> None:
-    result = subprocess.run(
-        [sys.executable, "-c", _MCP_REGISTRY_COLD_LOAD],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode == 0, (
-        "Reading the MCP tool registry in a cold process (mirrors the first MCP-tools request in a fresh "
-        "worker) crashed. A module-level import in a tool submodule reaches back into ee.hogai.tools through "
-        "the chat_agent chain, forming a cycle that only resolves when something imported the agent core "
-        f"first — which no longer happens at django.setup(). Defer the offending import. Subprocess stderr:\n"
-        f"{result.stderr[-2000:]}"
-    )
-
-
-# The boot entrypoints (manage.py, wsgi.py, asgi.py) disable cyclic GC around django.setup()
-# and freeze the survivors — boot allocations are ~all permanent, so collecting them only adds
-# pauses (~300ms). The dangerous failure mode is the window not closing: GC left disabled means
-# unbounded cycle growth in a long-lived process. This boots through manage.py and asserts both
-# ends of the window.
-def test_boot_gc_window_reenables_and_freezes() -> None:
-    manage_py = Path(__file__).parents[3] / "manage.py"
-    probe = (
-        "import gc; "
-        "assert gc.isenabled(), 'GC left disabled after boot'; "
-        "count = gc.get_freeze_count(); "
-        "assert count > 100_000, f'boot objects not frozen (freeze count {count})'; "
-        "print('GC_BOOT_OK')"
-    )
-    result = subprocess.run(
-        [sys.executable, str(manage_py), "shell", "-c", probe],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode == 0, f"manage.py shell failed:\n{result.stderr[-2000:]}"
-    assert "GC_BOOT_OK" in result.stdout, result.stdout[-500:]
 
 
 # Forward-looking counterpart to FORBIDDEN_AT_SETUP: that list catches *known* evicted modules

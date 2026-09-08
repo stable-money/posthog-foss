@@ -40,6 +40,10 @@ from products.tasks.backend.temporal.process_task.utils import (
     is_slack_interaction_state,
 )
 
+# The notification the sandbox agent sends when it finishes a turn. The tests build that
+# notification too, so it is a name rather than a literal in two places.
+TURN_COMPLETE_METHOD = "_posthog/turn_complete"
+
 logger = structlog.get_logger(__name__)
 
 HEARTBEAT_INTERVAL_SECONDS = 30
@@ -845,7 +849,7 @@ def _is_end_of_turn(event_data: dict) -> bool:
         return pi_event.get("type") == "turn_completed"
     if event_data.get("type") != "notification":
         return False
-    return event_data.get("notification", {}).get("method") == "_posthog/turn_complete"
+    return event_data.get("notification", {}).get("method") == TURN_COMPLETE_METHOD
 
 
 async def _emit_agentsh_events(sandbox_id: str, run_id: str, last_ts_ns: list[int]) -> None:
